@@ -1,0 +1,26 @@
+# Backend Dockerfile
+FROM node:18-alpine
+
+WORKDIR /app
+
+# Create logs directory
+RUN mkdir -p logs
+
+# Copy package files
+COPY backend/package*.json ./
+RUN npm ci --only=production
+
+# Copy source code
+COPY backend/ .
+
+# Create non-root user
+RUN addgroup -g 1001 -S nodejs
+RUN adduser -S anonverse -u 1001
+
+# Change ownership
+RUN chown -R anonverse:nodejs /app
+USER anonverse
+
+EXPOSE 5000
+
+CMD ["node", "server.js"]
