@@ -1,7 +1,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Globe, MessageCircle, Video, Users, Shield, Mic, MicOff, VideoOff as VideoOffIcon, SkipForward, Home } from 'lucide-react';
-import socketService from './services/socketService'; // Import your socket service
-import webrtcService from './services/webrtcService'; // Import your WebRTC service
+import socketService from './services/socketService';
+import webrtcService from './services/webrtcService';
+import VideoStream from './components/VideoStream';
+import DebugPanel from './components/DebugPanel';
+import { CHAT_MODES, CONNECTION_STATES } from './utils/constants';
 
 function App() {
   const [theme, setTheme] = useState('light');
@@ -22,7 +25,7 @@ function App() {
   const [remoteStream, setRemoteStream] = useState(null);
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
-  const [callStatus, setCallStatus] = useState('idle'); // 'idle', 'calling', 'connected'
+  const [callStatus, setCallStatus] = useState('idle');
   const [webrtcError, setWebrtcError] = useState(null);
 
   // Video refs
@@ -50,6 +53,8 @@ function App() {
 
   // Initialize services
   useEffect(() => {
+    console.log('🚀 Initializing services...');
+    
     // Connect socket
     socketService.connect();
 
@@ -58,30 +63,29 @@ function App() {
 
     // Setup WebRTC callbacks
     webrtcService.onLocalStream = (stream) => {
-      console.log('Local stream received from WebRTC service:', stream);
+      console.log('📹 Local stream received:', stream);
       setLocalStream(stream);
-      console.log("This is local video ref...",localVideoRef);
       
-      // Also update video element directly if ref exists
+      // Directly set the video element source
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
-        console.log('Local video element updated directly');
+        console.log('✅ Local video element updated');
       }
     };
 
     webrtcService.onRemoteStream = (stream) => {
-      console.log('Remote stream received from WebRTC service:', stream);
+      console.log('📺 Remote stream received:', stream);
       setRemoteStream(stream);
       
-      // Also update video element directly if ref exists
+      // Directly set the video element source
       if (remoteVideoRef.current) {
         remoteVideoRef.current.srcObject = stream;
-        console.log('Remote video element updated directly');
+        console.log('✅ Remote video element updated');
       }
     };
 
     webrtcService.onConnectionStateChange = (state) => {
-      console.log('WebRTC connection state:', state);
+      console.log('🔗 WebRTC connection state:', state);
       if (state === 'connected') {
         setCallStatus('connected');
       } else if (state === 'failed' || state === 'disconnected') {
@@ -90,7 +94,7 @@ function App() {
     };
 
     webrtcService.onError = (error) => {
-      console.error('WebRTC error:', error);
+      console.error('❌ WebRTC error:', error);
       setWebrtcError(error);
       setCallStatus('idle');
     };
@@ -99,11 +103,9 @@ function App() {
     socketService.on('match-found', handleMatchFound);
     socketService.on('message-received', handleMessageReceived);
     socketService.on('partner-disconnected', handlePartnerDisconnected);
-    socketService.on('partner-typing', handlePartnerTyping);
-    socketService.on('partner-stopped-typing', handlePartnerStoppedTyping);
 
     return () => {
-      // Cleanup
+      console.log('🧹 Cleaning up services...');
       webrtcService.cleanup();
       socketService.disconnect();
     };
@@ -111,24 +113,28 @@ function App() {
 
   // Update video elements when streams change
   useEffect(() => {
-    console.log('Local stream updated:', localStream);
+    console.log('🔄 Local stream effect triggered:', !!localStream);
     if (localVideoRef.current && localStream) {
       localVideoRef.current.srcObject = localStream;
-      console.log('Local video element updated with stream');
+      // Ensure autoplay works
+      localVideoRef.current.play().catch(e => console.log('Local video autoplay failed:', e));
+      console.log('✅ Local video updated in effect');
     }
   }, [localStream]);
 
   useEffect(() => {
-    console.log('Remote stream updated:', remoteStream);
+    console.log('🔄 Remote stream effect triggered:', !!remoteStream);
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
-      console.log('Remote video element updated with stream');
+      // Ensure autoplay works
+      remoteVideoRef.current.play().catch(e => console.log('Remote video autoplay failed:', e));
+      console.log('✅ Remote video updated in effect');
     }
   }, [remoteStream]);
 
   // Socket event handlers
   const handleMatchFound = (matchData) => {
-    console.log('Match found:', matchData);
+    console.log('🎯 Match found:', matchData);
     setPartner({
       id: matchData.partnerId,
       commonInterests: matchData.commonInterests || []
@@ -139,6 +145,7 @@ function App() {
     
     // Start video call if in video mode
     if (chatMode === 'video') {
+      console.log('📞 Starting video call...');
       webrtcService.startCall(matchData.partnerId);
       setCallStatus('calling');
     }
@@ -155,19 +162,12 @@ function App() {
   };
 
   const handlePartnerDisconnected = () => {
-    console.log('Partner disconnected');
+    console.log('👋 Partner disconnected');
     handleEndChat();
   };
 
-  const handlePartnerTyping = () => {
-    // Handle typing indicator if needed
-  };
-
-  const handlePartnerStoppedTyping = () => {
-    // Handle stop typing indicator if needed
-  };
-
   const handleStartChat = async () => {
+    console.log('🚀 Starting chat...', { chatMode, selectedInterests });
     setCurrentPage('matching');
     setMatchingStatus('Looking for someone to chat with...');
     setConnectionStatus('connecting');
@@ -176,12 +176,24 @@ function App() {
     // If video mode, request camera/microphone permissions first
     if (chatMode === 'video') {
       try {
+        console.log('🎥 Requesting camera/microphone access...');
         setCallStatus('calling');
+        
         // Pre-initialize user media to request permissions
-        await webrtcService.getUserMedia({ video: true, audio: true });
-        console.log('Camera and microphone access granted');
+        const stream = await webrtcService.getUserMedia({ video: true, audio: true });
+        console.log('✅ Camera and microphone access granted:', stream);
+        
+        // Set the local stream immediately
+        setLocalStream(stream);
+        
+        // Update video element immediately
+        if (localVideoRef.current) {
+          localVideoRef.current.srcObject = stream;
+          localVideoRef.current.play().catch(e => console.log('Video play failed:', e));
+        }
+        
       } catch (error) {
-        console.error('Failed to get user media:', error);
+        console.error('❌ Failed to get user media:', error);
         setWebrtcError('Unable to access camera/microphone. Please check permissions and try again.');
         setCurrentPage('home');
         setCallStatus('idle');
@@ -237,6 +249,7 @@ function App() {
   };
 
   const handleEndChat = () => {
+    console.log('🛑 Ending chat...');
     setCurrentPage('home');
     setPartner(null);
     setMessages([]);
@@ -484,22 +497,15 @@ function App() {
         {callStatus === 'calling' && chatMode === 'video' && (
           <div className="mb-6">
             <div className="w-48 h-36 bg-gray-800 rounded-lg overflow-hidden mx-auto mb-4 border-2 border-blue-500">
-              {localStream ? (
-                <video
-                  ref={localVideoRef}
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full h-full object-cover transform scale-x-[-1]"
-                />
-              ) : (
-                <div className="w-full h-full flex items-center justify-center text-white">
-                  <div className="text-center">
-                    <Video className="w-8 h-8 mx-auto mb-2 opacity-50" />
-                    <span className="text-sm">Loading camera...</span>
-                  </div>
-                </div>
-              )}
+              <VideoStream
+                stream={localStream}
+                muted={true}
+                mirrored={true}
+                placeholder="Loading camera..."
+                className="w-full h-full"
+                onVideoLoad={() => console.log('✅ Local video loaded in matching')}
+                onVideoError={(error) => console.error('❌ Local video error in matching:', error)}
+              />
             </div>
             <p className="text-sm text-green-600 dark:text-green-400">
               {localStream ? '✓ Camera and microphone ready' : '📹 Requesting camera access...'}
@@ -590,41 +596,27 @@ function App() {
           {chatMode === 'video' && (
             <div className="w-1/2 bg-black relative">
               {/* Remote Video */}
-              <video
-                ref={remoteVideoRef}
-                autoPlay
-                playsInline
-                className="w-full h-full object-cover"
+              <VideoStream
+                stream={remoteStream}
+                muted={false}
+                mirrored={false}
+                placeholder="Waiting for partner's video..."
+                className="w-full h-full"
+                onVideoLoad={() => console.log('✅ Remote video loaded')}
+                onVideoError={(error) => console.error('❌ Remote video error:', error)}
               />
-              
-              {/* No remote video placeholder */}
-              {!remoteStream && (
-                <div className="absolute inset-0 flex items-center justify-center text-white">
-                  <div className="text-center">
-                    <Video className="w-16 h-16 mx-auto mb-4 opacity-50" />
-                    <p>Waiting for partner's video...</p>
-                  </div>
-                </div>
-              )}
               
               {/* Local Video (Picture in Picture) */}
               <div className="absolute bottom-20 right-4 w-40 h-32 bg-gray-800 rounded-lg overflow-hidden border-2 border-white shadow-lg">
-                {localStream ? (
-                  <video
-                    ref={localVideoRef}
-                    autoPlay
-                    playsInline
-                    muted
-                    className="w-full h-full object-cover transform scale-x-[-1]"
-                  />
-                ) : (
-                  <div className="w-full h-full flex items-center justify-center text-white text-xs">
-                    <div className="text-center">
-                      <Video className="w-6 h-6 mx-auto mb-1 opacity-50" />
-                      <span>Your Video</span>
-                    </div>
-                  </div>
-                )}
+                <VideoStream
+                  stream={localStream}
+                  muted={true}
+                  mirrored={true}
+                  placeholder="Your Video"
+                  className="w-full h-full"
+                  onVideoLoad={() => console.log('✅ Local PIP video loaded')}
+                  onVideoError={(error) => console.error('❌ Local PIP video error:', error)}
+                />
               </div>
               
               {/* Video Controls */}
@@ -779,6 +771,15 @@ function App() {
             </p>
           </div>
         </footer>
+      )}
+      {/* Debug Panel (only in development) */}
+      {process.env.NODE_ENV === 'development' && (
+        <DebugPanel 
+          localStream={localStream} 
+          remoteStream={remoteStream}
+          localVideoRef={localVideoRef}
+          remoteVideoRef={remoteVideoRef}
+        />
       )}
     </div>
   );
