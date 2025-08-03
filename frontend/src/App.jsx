@@ -1,115 +1,7 @@
-import React, { useState, useEffect } from 'react';
-import { Globe, MessageCircle, Video, Users, Shield, Phone, PhoneOff, Mic, MicOff, VideoOff as VideoOffIcon, SkipForward, Home } from 'lucide-react';
-
-// Mock Socket Service (you can replace with real socket.io later)
-const mockSocket = {
-  emit: (event, data) => {
-    console.log('Socket emit:', event, data);
-    // Simulate finding a match after 2 seconds
-    if (event === 'join-queue') {
-      setTimeout(() => {
-        window.dispatchEvent(new CustomEvent('match-found', {
-          detail: {
-            partnerId: 'mock-partner-123',
-            commonInterests: data.interests?.slice(0, 2) || [],
-            mode: data.mode,
-            roomId: 'mock-room-456'
-          }
-        }));
-      }, 2000);
-    }
-  },
-  on: (event, callback) => {
-    window.addEventListener(event, (e) => callback(e.detail));
-  },
-  off: (event, callback) => {
-    window.removeEventListener(event, callback);
-  }
-};
-
-// Mock WebRTC Service
-class MockWebRTCService {
-  constructor() {
-    this.localStream = null;
-    this.remoteStream = null;
-    this.isVideoEnabled = true;
-    this.isAudioEnabled = true;
-    this.connectionState = 'new';
-  }
-
-  async getUserMedia() {
-    try {
-      // Create a mock video stream
-      const canvas = document.createElement('canvas');
-      canvas.width = 640;
-      canvas.height = 480;
-      const ctx = canvas.getContext('2d');
-      
-      // Draw a simple pattern
-      ctx.fillStyle = '#4F46E5';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = 'white';
-      ctx.font = '30px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText('Your Video', canvas.width/2, canvas.height/2 - 20);
-      ctx.fillText('(Mock Stream)', canvas.width/2, canvas.height/2 + 20);
-      
-      this.localStream = canvas.captureStream(30);
-      return this.localStream;
-    } catch (error) {
-      console.error('Error getting user media:', error);
-      throw error;
-    }
-  }
-
-  async startCall(partnerId) {
-    await this.getUserMedia();
-    this.connectionState = 'connected';
-    
-    // Simulate remote stream after 1 second
-    setTimeout(() => {
-      const canvas = document.createElement('canvas');
-      canvas.width = 640;
-      canvas.height = 480;
-      const ctx = canvas.getContext('2d');
-      
-      ctx.fillStyle = '#7C3AED';
-      ctx.fillRect(0, 0, canvas.width, canvas.height);
-      ctx.fillStyle = 'white';
-      ctx.font = '30px Arial';
-      ctx.textAlign = 'center';
-      ctx.fillText('Partner Video', canvas.width/2, canvas.height/2 - 20);
-      ctx.fillText('(Mock Stream)', canvas.width/2, canvas.height/2 + 20);
-      
-      this.remoteStream = canvas.captureStream(30);
-      window.dispatchEvent(new CustomEvent('remote-stream', { detail: this.remoteStream }));
-    }, 1000);
-  }
-
-  toggleVideo() {
-    this.isVideoEnabled = !this.isVideoEnabled;
-    return this.isVideoEnabled;
-  }
-
-  toggleAudio() {
-    this.isAudioEnabled = !this.isAudioEnabled;
-    return this.isAudioEnabled;
-  }
-
-  endCall() {
-    if (this.localStream) {
-      this.localStream.getTracks().forEach(track => track.stop());
-      this.localStream = null;
-    }
-    if (this.remoteStream) {
-      this.remoteStream.getTracks().forEach(track => track.stop());
-      this.remoteStream = null;
-    }
-    this.connectionState = 'closed';
-  }
-}
-
-const webrtcService = new MockWebRTCService();
+import React, { useState, useEffect, useRef } from 'react';
+import { Globe, MessageCircle, Video, Users, Shield, Mic, MicOff, VideoOff as VideoOffIcon, SkipForward, Home } from 'lucide-react';
+import socketService from './services/socketService'; // Import your socket service
+import webrtcService from './services/webrtcService'; // Import your WebRTC service
 
 function App() {
   const [theme, setTheme] = useState('light');
@@ -131,6 +23,11 @@ function App() {
   const [isVideoEnabled, setIsVideoEnabled] = useState(true);
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
   const [callStatus, setCallStatus] = useState('idle'); // 'idle', 'calling', 'connected'
+  const [webrtcError, setWebrtcError] = useState(null);
+
+  // Video refs
+  const localVideoRef = useRef(null);
+  const remoteVideoRef = useRef(null);
 
   const toggleTheme = () => {
     setTheme(theme === 'light' ? 'dark' : 'light');
@@ -151,29 +48,153 @@ function App() {
     }
   };
 
+  // Initialize services
+  useEffect(() => {
+    // Connect socket
+    socketService.connect();
+
+    // Initialize WebRTC service
+    webrtcService.initialize(socketService);
+
+    // Setup WebRTC callbacks
+    webrtcService.onLocalStream = (stream) => {
+      console.log('Local stream received from WebRTC service:', stream);
+      setLocalStream(stream);
+      console.log("This is local video ref...",localVideoRef);
+      
+      // Also update video element directly if ref exists
+      if (localVideoRef.current) {
+        localVideoRef.current.srcObject = stream;
+        console.log('Local video element updated directly');
+      }
+    };
+
+    webrtcService.onRemoteStream = (stream) => {
+      console.log('Remote stream received from WebRTC service:', stream);
+      setRemoteStream(stream);
+      
+      // Also update video element directly if ref exists
+      if (remoteVideoRef.current) {
+        remoteVideoRef.current.srcObject = stream;
+        console.log('Remote video element updated directly');
+      }
+    };
+
+    webrtcService.onConnectionStateChange = (state) => {
+      console.log('WebRTC connection state:', state);
+      if (state === 'connected') {
+        setCallStatus('connected');
+      } else if (state === 'failed' || state === 'disconnected') {
+        setCallStatus('idle');
+      }
+    };
+
+    webrtcService.onError = (error) => {
+      console.error('WebRTC error:', error);
+      setWebrtcError(error);
+      setCallStatus('idle');
+    };
+
+    // Setup socket listeners
+    socketService.on('match-found', handleMatchFound);
+    socketService.on('message-received', handleMessageReceived);
+    socketService.on('partner-disconnected', handlePartnerDisconnected);
+    socketService.on('partner-typing', handlePartnerTyping);
+    socketService.on('partner-stopped-typing', handlePartnerStoppedTyping);
+
+    return () => {
+      // Cleanup
+      webrtcService.cleanup();
+      socketService.disconnect();
+    };
+  }, []);
+
+  // Update video elements when streams change
+  useEffect(() => {
+    console.log('Local stream updated:', localStream);
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+      console.log('Local video element updated with stream');
+    }
+  }, [localStream]);
+
+  useEffect(() => {
+    console.log('Remote stream updated:', remoteStream);
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+      console.log('Remote video element updated with stream');
+    }
+  }, [remoteStream]);
+
+  // Socket event handlers
+  const handleMatchFound = (matchData) => {
+    console.log('Match found:', matchData);
+    setPartner({
+      id: matchData.partnerId,
+      commonInterests: matchData.commonInterests || []
+    });
+    setConnectionStatus('connected');
+    setCurrentPage('chat');
+    setMatchingStatus('');
+    
+    // Start video call if in video mode
+    if (chatMode === 'video') {
+      webrtcService.startCall(matchData.partnerId);
+      setCallStatus('calling');
+    }
+  };
+
+  const handleMessageReceived = (messageData) => {
+    const newMessage = {
+      id: Date.now(),
+      content: messageData.content,
+      sender: 'partner',
+      timestamp: new Date().toISOString()
+    };
+    setMessages(prev => [...prev, newMessage]);
+  };
+
+  const handlePartnerDisconnected = () => {
+    console.log('Partner disconnected');
+    handleEndChat();
+  };
+
+  const handlePartnerTyping = () => {
+    // Handle typing indicator if needed
+  };
+
+  const handlePartnerStoppedTyping = () => {
+    // Handle stop typing indicator if needed
+  };
+
   const handleStartChat = async () => {
     setCurrentPage('matching');
     setMatchingStatus('Looking for someone to chat with...');
     setConnectionStatus('connecting');
+    setWebrtcError(null);
     
-    // Join queue
-    mockSocket.emit('join-queue', {
+    // If video mode, request camera/microphone permissions first
+    if (chatMode === 'video') {
+      try {
+        setCallStatus('calling');
+        // Pre-initialize user media to request permissions
+        await webrtcService.getUserMedia({ video: true, audio: true });
+        console.log('Camera and microphone access granted');
+      } catch (error) {
+        console.error('Failed to get user media:', error);
+        setWebrtcError('Unable to access camera/microphone. Please check permissions and try again.');
+        setCurrentPage('home');
+        setCallStatus('idle');
+        return;
+      }
+    }
+    
+    // Join matching queue
+    socketService.joinQueue({
       interests: selectedInterests,
       mode: chatMode,
       sessionId: Date.now().toString()
     });
-
-    // If video mode, prepare video call
-    if (chatMode === 'video') {
-      try {
-        const stream = await webrtcService.getUserMedia();
-        setLocalStream(stream);
-        setCallStatus('calling');
-      } catch (error) {
-        console.error('Failed to get user media:', error);
-        alert('Unable to access camera/microphone. Please check permissions.');
-      }
-    }
   };
 
   const handleSendMessage = () => {
@@ -186,29 +207,15 @@ function App() {
       };
       
       setMessages(prev => [...prev, newMessage]);
-      setMessageInput('');
       
-      // Simulate partner response
-      setTimeout(() => {
-        const responses = [
-          "That's interesting! Tell me more.",
-          "I totally agree with you!",
-          "What do you think about that?",
-          "Haha, that's funny!",
-          "Really? I had no idea!",
-          "Cool! I like that too.",
-          "What's your favorite part about it?"
-        ];
-        
-        const response = {
-          id: Date.now() + 1,
-          content: responses[Math.floor(Math.random() * responses.length)],
-          sender: 'partner',
-          timestamp: new Date().toISOString()
-        };
-        
-        setMessages(prev => [...prev, response]);
-      }, 1000 + Math.random() * 2000);
+      // Send message via socket
+      socketService.sendMessage({
+        content: messageInput.trim(),
+        to: partner.id,
+        timestamp: new Date().toISOString()
+      });
+      
+      setMessageInput('');
     }
   };
 
@@ -218,27 +225,15 @@ function App() {
     setConnectionStatus('connecting');
     setMatchingStatus('Looking for someone else...');
     
+    // End current call and start new matching
     if (chatMode === 'video') {
       webrtcService.endCall();
       setRemoteStream(null);
       setCallStatus('calling');
     }
     
-    // Simulate finding new match
-    setTimeout(() => {
-      const newPartner = {
-        id: Date.now().toString(),
-        commonInterests: selectedInterests.slice(0, Math.floor(Math.random() * 3) + 1)
-      };
-      setPartner(newPartner);
-      setConnectionStatus('connected');
-      setMatchingStatus('');
-      
-      if (chatMode === 'video') {
-        webrtcService.startCall(newPartner.id);
-        setCallStatus('connected');
-      }
-    }, 1500);
+    // Skip current user and find new match
+    socketService.skipUser();
   };
 
   const handleEndChat = () => {
@@ -247,13 +242,18 @@ function App() {
     setMessages([]);
     setConnectionStatus('disconnected');
     setMatchingStatus('');
+    setWebrtcError(null);
     
+    // End WebRTC call
     if (chatMode === 'video') {
       webrtcService.endCall();
       setLocalStream(null);
       setRemoteStream(null);
       setCallStatus('idle');
     }
+    
+    // Disconnect from current chat
+    socketService.disconnectChat();
   };
 
   const toggleVideo = () => {
@@ -266,54 +266,17 @@ function App() {
     setIsAudioEnabled(enabled);
   };
 
-  // Socket event listeners
+  // Update video/audio status based on WebRTC service
   useEffect(() => {
-    const handleMatchFound = (matchData) => {
-      setPartner({
-        id: matchData.partnerId,
-        commonInterests: matchData.commonInterests
-      });
-      setConnectionStatus('connected');
-      setCurrentPage('chat');
-      setMatchingStatus('');
-      
-      if (chatMode === 'video') {
-        webrtcService.startCall(matchData.partnerId);
-        setCallStatus('connected');
+    const interval = setInterval(() => {
+      if (webrtcService.localStream) {
+        setIsVideoEnabled(webrtcService.isVideoEnabled());
+        setIsAudioEnabled(webrtcService.isAudioEnabled());
       }
-    };
+    }, 1000);
 
-    const handleRemoteStream = (stream) => {
-      setRemoteStream(stream);
-    };
-
-    mockSocket.on('match-found', handleMatchFound);
-    window.addEventListener('remote-stream', (e) => handleRemoteStream(e.detail));
-
-    return () => {
-      mockSocket.off('match-found', handleMatchFound);
-      window.removeEventListener('remote-stream', handleRemoteStream);
-    };
-  }, [chatMode]);
-
-  // Video stream effects
-  useEffect(() => {
-    if (localStream) {
-      const localVideo = document.getElementById('localVideo');
-      if (localVideo) {
-        localVideo.srcObject = localStream;
-      }
-    }
-  }, [localStream]);
-
-  useEffect(() => {
-    if (remoteStream) {
-      const remoteVideo = document.getElementById('remoteVideo');
-      if (remoteVideo) {
-        remoteVideo.srcObject = remoteStream;
-      }
-    }
-  }, [remoteStream]);
+    return () => clearInterval(interval);
+  }, []);
 
   const renderHomePage = () => (
     <main className="max-w-4xl mx-auto px-4 py-12">
@@ -334,6 +297,16 @@ function App() {
             <span className="font-semibold">YOU MUST BE 18 OR OLDER TO USE ANONVERSE</span>
           </div>
         </div>
+
+        {/* Error Display */}
+        {webrtcError && (
+          <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mb-8 max-w-2xl mx-auto">
+            <div className="text-red-800 dark:text-red-300">
+              <p className="font-semibold">Camera/Microphone Error:</p>
+              <p>{webrtcError}</p>
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Features Grid */}
@@ -508,6 +481,32 @@ function App() {
           Mode: {chatMode === 'text' ? 'Text Chat' : 'Video Call & Chat'}
         </p>
         
+        {callStatus === 'calling' && chatMode === 'video' && (
+          <div className="mb-6">
+            <div className="w-48 h-36 bg-gray-800 rounded-lg overflow-hidden mx-auto mb-4 border-2 border-blue-500">
+              {localStream ? (
+                <video
+                  ref={localVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="w-full h-full object-cover transform scale-x-[-1]"
+                />
+              ) : (
+                <div className="w-full h-full flex items-center justify-center text-white">
+                  <div className="text-center">
+                    <Video className="w-8 h-8 mx-auto mb-2 opacity-50" />
+                    <span className="text-sm">Loading camera...</span>
+                  </div>
+                </div>
+              )}
+            </div>
+            <p className="text-sm text-green-600 dark:text-green-400">
+              {localStream ? '✓ Camera and microphone ready' : '📹 Requesting camera access...'}
+            </p>
+          </div>
+        )}
+        
         <button
           onClick={handleEndChat}
           className="px-6 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
@@ -592,30 +591,65 @@ function App() {
             <div className="w-1/2 bg-black relative">
               {/* Remote Video */}
               <video
-                id="remoteVideo"
+                ref={remoteVideoRef}
                 autoPlay
                 playsInline
                 className="w-full h-full object-cover"
               />
               
+              {/* No remote video placeholder */}
+              {!remoteStream && (
+                <div className="absolute inset-0 flex items-center justify-center text-white">
+                  <div className="text-center">
+                    <Video className="w-16 h-16 mx-auto mb-4 opacity-50" />
+                    <p>Waiting for partner's video...</p>
+                  </div>
+                </div>
+              )}
+              
               {/* Local Video (Picture in Picture) */}
-              <div className="absolute bottom-4 right-4 w-32 h-24 bg-gray-800 rounded-lg overflow-hidden border-2 border-white">
-                <video
-                  id="localVideo"
-                  autoPlay
-                  playsInline
-                  muted
-                  className="w-full h-full object-cover transform scale-x-[-1]"
-                />
+              <div className="absolute bottom-20 right-4 w-40 h-32 bg-gray-800 rounded-lg overflow-hidden border-2 border-white shadow-lg">
+                {localStream ? (
+                  <video
+                    ref={localVideoRef}
+                    autoPlay
+                    playsInline
+                    muted
+                    className="w-full h-full object-cover transform scale-x-[-1]"
+                  />
+                ) : (
+                  <div className="w-full h-full flex items-center justify-center text-white text-xs">
+                    <div className="text-center">
+                      <Video className="w-6 h-6 mx-auto mb-1 opacity-50" />
+                      <span>Your Video</span>
+                    </div>
+                  </div>
+                )}
               </div>
               
               {/* Video Controls */}
               <div className="absolute bottom-4 left-1/2 transform -translate-x-1/2">
-                <div className="flex items-center space-x-4 bg-black bg-opacity-50 text-white px-4 py-2 rounded-full">
-                  <button onClick={toggleAudio} className="p-2 hover:bg-gray-700 rounded-full">
+                <div className="flex items-center space-x-4 bg-black bg-opacity-70 text-white px-6 py-3 rounded-full backdrop-blur-sm">
+                  <button 
+                    onClick={toggleAudio} 
+                    className={`p-3 rounded-full transition-colors ${
+                      isAudioEnabled 
+                        ? 'hover:bg-gray-600' 
+                        : 'bg-red-600 hover:bg-red-700'
+                    }`}
+                    title={isAudioEnabled ? 'Mute microphone' : 'Unmute microphone'}
+                  >
                     {isAudioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
                   </button>
-                  <button onClick={toggleVideo} className="p-2 hover:bg-gray-700 rounded-full">
+                  <button 
+                    onClick={toggleVideo} 
+                    className={`p-3 rounded-full transition-colors ${
+                      isVideoEnabled 
+                        ? 'hover:bg-gray-600' 
+                        : 'bg-red-600 hover:bg-red-700'
+                    }`}
+                    title={isVideoEnabled ? 'Turn off camera' : 'Turn on camera'}
+                  >
                     {isVideoEnabled ? <Video className="w-5 h-5" /> : <VideoOffIcon className="w-5 h-5" />}
                   </button>
                 </div>

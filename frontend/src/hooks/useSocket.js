@@ -6,7 +6,7 @@ export const useSocket = () => {
   const [connected, setConnected] = useState(false);
 
   useEffect(() => {
-    const socketURL = process.env.REACT_APP_SOCKET_URL || 'ws://localhost:5000';
+    const socketURL = 'ws://localhost:5000';  //process.env.REACT_APP_SOCKET_URL || 
     
     socketRef.current = io(socketURL, {
       transports: ['websocket', 'polling'],

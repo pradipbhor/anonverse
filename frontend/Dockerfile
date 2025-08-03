@@ -1,14 +1,14 @@
 # Frontend Dockerfile
-FROM node:18-alpine AS builder
+FROM node:18 AS builder
 
 WORKDIR /app
 
 # Copy package files
-COPY frontend/package*.json ./
+COPY package*.json ./
 RUN npm ci --only=production
 
 # Copy source code
-COPY frontend/ .
+COPY . .
 
 # Build the app
 RUN npm run build

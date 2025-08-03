@@ -7,11 +7,11 @@ WORKDIR /app
 RUN mkdir -p logs
 
 # Copy package files
-COPY backend/package*.json ./
+COPY package*.json ./
 RUN npm ci --only=production
 
 # Copy source code
-COPY backend/ .
+COPY . .
 
 # Create non-root user
 RUN addgroup -g 1001 -S nodejs
