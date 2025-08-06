@@ -9,7 +9,7 @@ import { CHAT_MODES, CONNECTION_STATES } from './utils/constants';
 function App() {
   const [theme, setTheme] = useState('light');
   const [currentPage, setCurrentPage] = useState('home'); // 'home', 'matching', 'chat'
-  const [chatMode, setChatMode] = useState('text');
+  const [chatMode, setChatMode] = useState('video');
   const [selectedInterests, setSelectedInterests] = useState([]);
   const [showInterests, setShowInterests] = useState(false);
   
@@ -142,6 +142,7 @@ function App() {
     setConnectionStatus('connected');
     setCurrentPage('chat');
     setMatchingStatus('');
+    console.log("This is chat mode::",chatMode)
     
     // Start video call if in video mode
     if (chatMode === 'video') {
@@ -370,7 +371,13 @@ function App() {
           </button>
 
           <button
-            onClick={() => setChatMode('video')}
+            onClick={() => {
+              setChatMode('video');
+              console.log('Chat mode set to:', 'video');
+              // Or if you want to log the current state:
+              console.log('Current chat mode:', chatMode);
+            }}
+            
             className={`p-8 border-2 rounded-xl transition-all transform hover:scale-105 ${
               chatMode === 'video'
                 ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 scale-105'

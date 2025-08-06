@@ -289,6 +289,10 @@ class WebRTCService {
   // Handle incoming answer
   async handleAnswer(data) {
     try {
+      if (!this.peerConnection || this.peerConnection.signalingState !== 'have-local-offer') {
+        console.warn('🛑 STOPPING: Wrong state for answer:', this.peerConnection?.signalingState);
+        return; // STOP processing
+      }
       console.log('📥 Handling answer from:', data.from);
       
       if (!this.peerConnection) {

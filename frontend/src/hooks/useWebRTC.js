@@ -90,6 +90,7 @@ export const useWebRTC = (socket, enabled = false) => {
 
   // Initialize call (called by initiator)
   const initializeCall = useCallback(async (partnerId) => {
+    console.log("Are we coming here to set the discreption:::",partnerId);
     if (!enabled || !socket) return;
 
     try {

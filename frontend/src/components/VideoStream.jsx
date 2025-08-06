@@ -11,9 +11,10 @@ const VideoStream = ({
   onVideoError,
   autoPlay = true,
   playsInline = true,
-  controls = false
+  controls = false,
+  videoRef
 }) => {
-  const videoRef = useRef(null);
+  const remoteVideoRef = videoRef;
   const [isLoaded, setIsLoaded] = useState(false);
   const [hasError, setHasError] = useState(false);
   const [retryCount, setRetryCount] = useState(0);
@@ -21,7 +22,7 @@ const VideoStream = ({
 
   // Force video update when stream changes
   const updateVideoStream = useCallback(async () => {
-    const video = videoRef.current;
+    const video = remoteVideoRef.current;
     if (!video) return;
 
     try {
@@ -106,7 +107,8 @@ const VideoStream = ({
 
   // Manual play function for user interaction
   const handleManualPlay = async () => {
-    const video = videoRef.current;
+    console.log("we are here to play the video...");
+    const video = remoteVideoRef.current;
     if (video) {
       try {
         await video.play();
@@ -154,7 +156,7 @@ const VideoStream = ({
   return (
     <div className={`relative ${className}`}>
       <video
-        ref={videoRef}
+        ref={remoteVideoRef}
         className={`w-full h-full object-cover ${mirrored ? 'transform scale-x-[-1]' : ''} ${
           (!stream || !isLoaded) ? 'hidden' : 'block'
         }`}

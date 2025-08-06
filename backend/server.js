@@ -205,16 +205,16 @@ app.get('/api/user/interests', userLimiter, (req, res) => {
 
 app.get('/api/user/online-count', userLimiter, (req, res) => {
   const onlineCount = connectedUsers.size;
-  const queueCount = Math.floor(onlineCount * 0.3); // Simulate queue
+  const queueCount = matchingQueue.textQueue.length + matchingQueue.videoQueue.length;
   
   res.json({
     success: true,
     onlineUsers: onlineCount,
     queueStats: {
       totalInQueue: queueCount,
-      textUsers: Math.floor(queueCount * 0.7),
-      videoUsers: Math.floor(queueCount * 0.3),
-      averageWaitTime: Math.floor(Math.random() * 30) + 10 // 10-40 seconds
+      textUsers: matchingQueue.textQueue.length,
+      videoUsers: matchingQueue.videoQueue.length,
+      averageWaitTime: Math.floor(Math.random() * 30) + 10
     },
     timestamp: new Date().toISOString()
   });
@@ -247,7 +247,7 @@ app.post('/api/moderation/check-content', moderationLimiter, (req, res) => {
     success: true,
     flagged,
     categories: flagged ? ['inappropriate-content'] : [],
-    confidence: flagged ? Math.floor(Math.random() * 50) + 50 : Math.floor(Math.random() * 30), // 0-30% if clean, 50-100% if flagged
+    confidence: flagged ? Math.floor(Math.random() * 50) + 50 : Math.floor(Math.random() * 30),
     action: flagged ? 'blocked' : 'approved',
     timestamp: new Date().toISOString()
   };
@@ -276,7 +276,6 @@ app.post('/api/moderation/report-user', moderationLimiter, (req, res) => {
 });
 
 app.get('/api/moderation/stats', moderationLimiter, (req, res) => {
-  // Mock moderation statistics
   const stats = {
     today: {
       reports: Math.floor(Math.random() * 50) + 10,
@@ -297,9 +296,131 @@ app.get('/api/moderation/stats', moderationLimiter, (req, res) => {
   });
 });
 
-// Socket.IO connection handling
+// =========================
+// SOCKET.IO MATCHING LOGIC
+// =========================
 const connectedUsers = new Map();
+const matchingQueue = {
+  textQueue: [],
+  videoQueue: []
+};
+const activeMatches = new Map(); // Map of roomId -> {user1, user2}
 
+// Helper function to find common interests
+function findCommonInterests(interests1, interests2) {
+  if (!interests1 || !interests2) return [];
+  const set1 = new Set(interests1.map(i => i.toLowerCase()));
+  const set2 = new Set(interests2.map(i => i.toLowerCase()));
+  return [...set1].filter(interest => set2.has(interest));
+}
+
+// Helper function to calculate compatibility score
+function calculateCompatibility(user1, user2) {
+  const commonInterests = findCommonInterests(user1.interests, user2.interests);
+  return commonInterests.length;
+}
+
+// Helper function to find best match
+function findBestMatch(user, queue) {
+  if (queue.length === 0) return null;
+  
+  let bestMatch = null;
+  let bestScore = -1;
+  let bestIndex = -1;
+  
+  for (let i = 0; i < queue.length; i++) {
+    const candidate = queue[i];
+    if (candidate.socketId === user.socketId) continue; // Don't match with self
+    
+    const score = calculateCompatibility(user, candidate);
+    if (score > bestScore) {
+      bestMatch = candidate;
+      bestScore = score;
+      bestIndex = i;
+    }
+  }
+  
+  // If no perfect match, just take the first available user
+  if (bestMatch) {
+    queue.splice(bestIndex, 1); // Remove from queue
+    return bestMatch;
+  }
+  
+  return null;
+}
+
+// Helper function to create a match
+function createMatch(user1, user2) {
+  const roomId = `room_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
+  const commonInterests = findCommonInterests(user1.interests, user2.interests);
+  
+  // Store the match
+  activeMatches.set(roomId, {
+    user1: user1.socketId,
+    user2: user2.socketId,
+    createdAt: new Date(),
+    mode: user1.mode,
+    commonInterests
+  });
+  
+  // Update user statuses
+  const connectedUser1 = connectedUsers.get(user1.socketId);
+  const connectedUser2 = connectedUsers.get(user2.socketId);
+  
+  if (connectedUser1) {
+    connectedUsers.set(user1.socketId, {
+      ...connectedUser1,
+      isMatched: true,
+      currentMatch: user2.socketId,
+      roomId,
+      inQueue: false
+    });
+  }
+  
+  if (connectedUser2) {
+    connectedUsers.set(user2.socketId, {
+      ...connectedUser2,
+      isMatched: true,
+      currentMatch: user1.socketId,
+      roomId,
+      inQueue: false
+    });
+  }
+  
+  // Send match notifications
+  const matchData1 = {
+    partnerId: user2.socketId,
+    commonInterests,
+    mode: user1.mode,
+    roomId
+  };
+  
+  const matchData2 = {
+    partnerId: user1.socketId,
+    commonInterests,
+    mode: user2.mode,
+    roomId
+  };
+  
+  // Join both users to the room
+  const socket1 = io.sockets.sockets.get(user1.socketId);
+  const socket2 = io.sockets.sockets.get(user2.socketId);
+  
+  if (socket1 && socket2) {
+    socket1.join(roomId);
+    socket2.join(roomId);
+    
+    socket1.emit('match-found', matchData1);
+    socket2.emit('match-found', matchData2);
+    
+    console.log(`💑 Match created: ${user1.socketId} ↔ ${user2.socketId} (Room: ${roomId})`);
+    return true;
+  }
+  
+  return false;
+}
+
+// Socket.IO connection handling
 io.on('connection', (socket) => {
   console.log(`👤 User connected: ${socket.id}`);
   
@@ -310,7 +431,9 @@ io.on('connection', (socket) => {
     isMatched: false,
     currentMatch: null,
     interests: [],
-    mode: 'text'
+    mode: 'text',
+    inQueue: false,
+    roomId: null
   });
 
   // Handle user joining with data
@@ -331,46 +454,59 @@ io.on('connection', (socket) => {
     console.log(`🔍 User ${socket.id} joined queue:`, queueData);
     
     const user = connectedUsers.get(socket.id);
-    if (user) {
-      connectedUsers.set(socket.id, {
-        ...user,
-        interests: queueData.interests || [],
-        mode: queueData.mode || 'text',
-        inQueue: true
-      });
+    if (!user) return;
+    
+    // Update user data
+    const updatedUser = {
+      ...user,
+      interests: queueData.interests || [],
+      mode: queueData.mode || 'text',
+      inQueue: true
+    };
+    connectedUsers.set(socket.id, updatedUser);
+    
+    // Add to appropriate queue
+    const queueUser = {
+      socketId: socket.id,
+      interests: queueData.interests || [],
+      mode: queueData.mode || 'text',
+      joinedQueueAt: new Date()
+    };
+    
+    const queue = queueData.mode === 'video' ? matchingQueue.videoQueue : matchingQueue.textQueue;
+    
+    // Check if user is already in queue
+    const existingIndex = queue.findIndex(q => q.socketId === socket.id);
+    if (existingIndex !== -1) {
+      queue.splice(existingIndex, 1); // Remove duplicate
     }
     
-    // Send queue status
-    socket.emit('queue-status', { 
-      position: Math.floor(Math.random() * 20) + 1,
-      estimatedWait: Math.floor(Math.random() * 60) + 30, // 30-90 seconds
-      message: 'Looking for someone with similar interests...'
-    });
+    // Try to find a match immediately
+    const match = findBestMatch(queueUser, queue);
     
-    // Simulate finding a match (for testing)
-    const matchDelay = Math.random() * 5000 + 2000; // 2-7 seconds
-    setTimeout(() => {
-      // Check if user is still connected and in queue
-      const currentUser = connectedUsers.get(socket.id);
-      if (currentUser && currentUser.inQueue) {
-        socket.emit('match-found', {
-          partnerId: `partner_${Date.now()}`,
-          commonInterests: queueData.interests?.slice(0, 2) || [],
-          mode: queueData.mode || 'text',
-          roomId: `room_${socket.id}_${Date.now()}`
+    if (match) {
+      // Found a match!
+      const success = createMatch(queueUser, match);
+      if (!success) {
+        // Match creation failed, add back to queue
+        queue.push(queueUser);
+        socket.emit('queue-status', { 
+          position: queue.length,
+          estimatedWait: queue.length * 15,
+          message: 'Looking for someone with similar interests...'
         });
-        
-        // Update user status
-        connectedUsers.set(socket.id, {
-          ...currentUser,
-          isMatched: true,
-          inQueue: false,
-          matchedAt: new Date()
-        });
-        
-        console.log(`💑 Match found for user ${socket.id}`);
       }
-    }, matchDelay);
+    } else {
+      // No match found, add to queue
+      queue.push(queueUser);
+      socket.emit('queue-status', { 
+        position: queue.length,
+        estimatedWait: queue.length * 15,
+        message: queue.length === 1 ? 'You are first in queue!' : 'Looking for someone with similar interests...'
+      });
+      
+      console.log(`📋 User ${socket.id} added to ${queueData.mode} queue (position: ${queue.length})`);
+    }
   });
 
   // Handle leaving queue
@@ -383,12 +519,23 @@ io.on('connection', (socket) => {
         isMatched: false
       });
     }
+    
+    // Remove from both queues
+    matchingQueue.textQueue = matchingQueue.textQueue.filter(q => q.socketId !== socket.id);
+    matchingQueue.videoQueue = matchingQueue.videoQueue.filter(q => q.socketId !== socket.id);
+    
     console.log(`❌ User ${socket.id} left queue`);
   });
 
   // Handle sending messages
   socket.on('send-message', (messageData) => {
     console.log(`💬 Message from ${socket.id}:`, messageData.content?.substring(0, 50));
+    
+    const user = connectedUsers.get(socket.id);
+    if (!user || !user.isMatched || !user.roomId) {
+      console.log(`❌ User ${socket.id} not in a match`);
+      return;
+    }
     
     const message = {
       id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
@@ -398,29 +545,26 @@ io.on('connection', (socket) => {
       type: 'text'
     };
 
-    // Acknowledge message sent
-    socket.emit('message-sent', message);
+    // Send to partner in the same room
+    socket.to(user.roomId).emit('message-received', message);
     
-    // In a real app, you'd send this to the matched partner
-    // For now, just echo it back as received (for testing)
-    setTimeout(() => {
-      socket.emit('message-received', {
-        ...message,
-        id: `msg_${Date.now()}_echo`,
-        senderId: 'partner',
-        content: `Echo: ${message.content}`
-      });
-    }, 500);
+    // Acknowledge to sender
+    socket.emit('message-sent', message);
   });
 
   // Handle typing indicators
   socket.on('typing', () => {
-    // In real app, send to matched partner
-    console.log(`⌨️  User ${socket.id} is typing`);
+    const user = connectedUsers.get(socket.id);
+    if (user && user.isMatched && user.roomId) {
+      socket.to(user.roomId).emit('partner-typing', true);
+    }
   });
 
   socket.on('stop-typing', () => {
-    console.log(`⌨️  User ${socket.id} stopped typing`);
+    const user = connectedUsers.get(socket.id);
+    if (user && user.isMatched && user.roomId) {
+      socket.to(user.roomId).emit('partner-typing', false);
+    }
   });
 
   // Handle user reports
@@ -437,37 +581,151 @@ io.on('connection', (socket) => {
   // Handle skip user
   socket.on('skip-user', () => {
     const user = connectedUsers.get(socket.id);
-    if (user) {
-      connectedUsers.set(socket.id, {
-        ...user,
-        isMatched: false,
-        currentMatch: null
-      });
-    }
+    if (!user || !user.isMatched || !user.roomId) return;
     
     console.log(`⏭️  User ${socket.id} skipped partner`);
-    socket.emit('partner-disconnected');
+    
+    // Notify partner
+    socket.to(user.roomId).emit('partner-disconnected');
+    
+    // Clean up match
+    const match = activeMatches.get(user.roomId);
+    if (match) {
+      const partnerId = match.user1 === socket.id ? match.user2 : match.user1;
+      const partner = connectedUsers.get(partnerId);
+      
+      if (partner) {
+        connectedUsers.set(partnerId, {
+          ...partner,
+          isMatched: false,
+          currentMatch: null,
+          roomId: null
+        });
+      }
+      
+      activeMatches.delete(user.roomId);
+    }
+    
+    // Reset current user
+    connectedUsers.set(socket.id, {
+      ...user,
+      isMatched: false,
+      currentMatch: null,
+      roomId: null
+    });
+    
+    // Leave the room
+    socket.leave(user.roomId);
+  });
+
+  // Handle disconnect chat
+  socket.on('disconnect-chat', () => {
+    const user = connectedUsers.get(socket.id);
+    if (!user || !user.isMatched || !user.roomId) return;
+    
+    console.log(`🛑 User ${socket.id} disconnected from chat`);
+    
+    // Notify partner
+    socket.to(user.roomId).emit('partner-disconnected');
+    
+    // Clean up match
+    const match = activeMatches.get(user.roomId);
+    if (match) {
+      const partnerId = match.user1 === socket.id ? match.user2 : match.user1;
+      const partner = connectedUsers.get(partnerId);
+      
+      if (partner) {
+        connectedUsers.set(partnerId, {
+          ...partner,
+          isMatched: false,
+          currentMatch: null,
+          roomId: null
+        });
+      }
+      
+      activeMatches.delete(user.roomId);
+    }
+    
+    // Reset current user
+    connectedUsers.set(socket.id, {
+      ...user,
+      isMatched: false,
+      currentMatch: null,
+      roomId: null
+    });
+    
+    // Leave the room
+    socket.leave(user.roomId);
   });
 
   // Handle WebRTC signaling
   socket.on('webrtc-offer', (data) => {
-    console.log(`📹 WebRTC offer from ${socket.id}`);
-    // In real app, forward to matched partner
+    console.log(`📹 WebRTC offer from ${socket.id} to ${data.to}`);
+    const user = connectedUsers.get(socket.id);
+    if (user && user.isMatched && user.roomId) {
+      socket.to(user.roomId).emit('webrtc-offer', {
+        ...data,
+        from: socket.id
+      });
+    }
   });
 
   socket.on('webrtc-answer', (data) => {
-    console.log(`📹 WebRTC answer from ${socket.id}`);
-    // In real app, forward to matched partner
+    console.log(`📹 WebRTC answer from ${socket.id} to ${data.to}`);
+    const user = connectedUsers.get(socket.id);
+    if (user && user.isMatched && user.roomId) {
+      socket.to(user.roomId).emit('webrtc-answer', {
+        ...data,
+        from: socket.id
+      });
+    }
   });
 
   socket.on('webrtc-ice-candidate', (data) => {
     console.log(`🧊 ICE candidate from ${socket.id}`);
-    // In real app, forward to matched partner
+    const user = connectedUsers.get(socket.id);
+    if (user && user.isMatched && user.roomId) {
+      socket.to(user.roomId).emit('webrtc-ice-candidate', {
+        ...data,
+        from: socket.id
+      });
+    }
   });
 
   // Handle disconnect
   socket.on('disconnect', (reason) => {
     console.log(`👋 User disconnected: ${socket.id} (${reason})`);
+    
+    const user = connectedUsers.get(socket.id);
+    if (user) {
+      // Remove from queues
+      matchingQueue.textQueue = matchingQueue.textQueue.filter(q => q.socketId !== socket.id);
+      matchingQueue.videoQueue = matchingQueue.videoQueue.filter(q => q.socketId !== socket.id);
+      
+      // If user was matched, notify partner
+      if (user.isMatched && user.roomId) {
+        socket.to(user.roomId).emit('partner-disconnected');
+        
+        // Clean up match
+        const match = activeMatches.get(user.roomId);
+        if (match) {
+          const partnerId = match.user1 === socket.id ? match.user2 : match.user1;
+          const partner = connectedUsers.get(partnerId);
+          
+          if (partner) {
+            connectedUsers.set(partnerId, {
+              ...partner,
+              isMatched: false,
+              currentMatch: null,
+              roomId: null
+            });
+          }
+          
+          activeMatches.delete(user.roomId);
+        }
+      }
+    }
+    
     connectedUsers.delete(socket.id);
   });
 });
@@ -533,6 +791,7 @@ async function startServer() {
       console.log(`🔗 CORS Origin: ${process.env.CORS_ORIGIN || 'http://localhost:3000'}`);
       console.log(`❤️  Health check: http://localhost:${PORT}/health`);
       console.log(`👥 Online users: ${connectedUsers.size}`);
+      console.log(`📋 Queue status: Text: ${matchingQueue.textQueue.length}, Video: ${matchingQueue.videoQueue.length}`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
