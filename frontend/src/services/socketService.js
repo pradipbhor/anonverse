@@ -68,8 +68,15 @@ class SocketService {
 
   // Join matching queue
   joinQueue(userData) {
+    console.log("We are calling join-queueue............",this.socket ,"===",this.isConnected);
     if (this.socket && this.isConnected) {
+      console.log("We are calling join-queueue............");
       this.socket.emit('join-queue', userData);
+    }
+  }
+  userJoined(userData) {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('user-join', userData);
     }
   }
 

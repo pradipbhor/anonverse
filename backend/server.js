@@ -392,6 +392,7 @@ function createMatch(user1, user2) {
     partnerId: user2.socketId,
     commonInterests,
     mode: user1.mode,
+    sendOffer:true,
     roomId
   };
   
