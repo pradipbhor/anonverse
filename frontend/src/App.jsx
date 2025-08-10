@@ -3,7 +3,6 @@ import { Globe, MessageCircle, Video, Users, Shield, Mic, MicOff, VideoOff as Vi
 import socketService from './services/socketService';
 import webrtcService from './services/webrtcService';
 import VideoStream from './components/VideoStream';
-import DebugPanel from './components/DebugPanel';
 import { CHAT_MODES, CONNECTION_STATES } from './utils/constants';
 
 function App() {
