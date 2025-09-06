@@ -1,3 +1,18 @@
+Make it executable:
+
+chmod +x docker-helper.sh
+
+ Run commands:
+➤ Build the image:
+./docker-helper.sh build
+
+➤ Run the container:
+./docker-helper.sh run
+
+➤ Launch (build + run in one step):
+./docker-helper.sh launch
+
+
 Key Features Implemented
 ✅ Anonymous Matching - Random user pairing
 ✅ Interest-based Filtering - Match users with similar interests
