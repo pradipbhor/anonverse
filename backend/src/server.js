@@ -420,10 +420,12 @@ function findBestMatch(user, queue) {
   return null;
 }
 
-// Helper function to create a match
+// Replace your entire createMatch function with this:
 function createMatch(user1, user2) {
   const roomId = `room_${Date.now()}_${Math.random().toString(36).substr(2, 8)}`;
   const commonInterests = findCommonInterests(user1.interests, user2.interests);
+  
+  console.log('🔨 Creating match between:', user1.socketId, 'and', user2.socketId);
   
   // Store the match
   activeMatches.set(roomId, {
@@ -458,38 +460,47 @@ function createMatch(user1, user2) {
     });
   }
   
-  // Send match notifications
-  const matchData1 = {
-    partnerId: user2.socketId,
-    commonInterests,
-    mode: user1.mode,
-    sendOffer: true,
-    roomId
-  };
-  
-  const matchData2 = {
-    partnerId: user1.socketId,
-    commonInterests,
-    mode: user2.mode,
-    roomId
-  };
-  
-  // Join both users to the room
+  // Get socket instances
   const socket1 = io.sockets.sockets.get(user1.socketId);
   const socket2 = io.sockets.sockets.get(user2.socketId);
   
   if (socket1 && socket2) {
+    // Join room
     socket1.join(roomId);
     socket2.join(roomId);
     
-    socket1.emit('match-found', matchData1);
-    socket2.emit('match-found', matchData2);
+    // CRITICAL: Send DIFFERENT sendOffer values to each user
+    // Create separate objects to avoid reference issues
+    const matchDataForUser1 = {
+      partnerId: user2.socketId,
+      commonInterests: commonInterests,
+      mode: user1.mode,
+      sendOffer: true,  // User1 ALWAYS initiates
+      roomId: roomId
+    };
     
-    logger.info(`💑 Match created: ${user1.socketId} ↔ ${user2.socketId} (Room: ${roomId})`);
-    console.log(`💑 Match created: ${user1.socketId} ↔ ${user2.socketId} (Room: ${roomId})`);
+    const matchDataForUser2 = {
+      partnerId: user1.socketId,
+      commonInterests: commonInterests,
+      mode: user2.mode,
+      sendOffer: false, // User2 ALWAYS receives
+      roomId: roomId
+    };
+    
+    // Send to each user
+    socket1.emit('match-found', matchDataForUser1);
+    socket2.emit('match-found', matchDataForUser2);
+    
+    console.log(`💑 Match created successfully!`);
+    console.log(`📤 Sent to ${user1.socketId}: sendOffer=TRUE (initiator)`);
+    console.log(`📤 Sent to ${user2.socketId}: sendOffer=FALSE (receiver)`);
+    
+    logger.info(`💑 Match created: ${user1.socketId} (initiator) ↔ ${user2.socketId} (receiver) (Room: ${roomId})`);
+    
     return true;
   }
   
+  console.error('❌ Failed to create match - one or both sockets not found');
   return false;
 }
 
@@ -524,69 +535,74 @@ io.on('connection', (socket) => {
     console.log(`✅ User ${socket.id} joined with data:`, userData);
   });
 
-  // Handle joining matching queue
-  socket.on('join-queue', (queueData) => {
-    logger.info(`🔍 User ${socket.id} joined queue:`, queueData);
-    console.log(`🔍 User ${socket.id} joined queue:`, queueData);
-    
-    const user = connectedUsers.get(socket.id);
-    if (!user) return;
-    
-    // Update user data
-    const updatedUser = {
-      ...user,
-      interests: queueData.interests || [],
-      mode: queueData.mode || 'text',
-      inQueue: true
-    };
-    connectedUsers.set(socket.id, updatedUser);
-    
-    // Add to appropriate queue
-    const queueUser = {
-      socketId: socket.id,
-      interests: queueData.interests || [],
-      mode: queueData.mode || 'text',
-      joinedQueueAt: new Date()
-    };
-    
-    const queue = queueData.mode === 'video' ? matchingQueue.videoQueue : matchingQueue.textQueue;
-    
-    // Check if user is already in queue
-    const existingIndex = queue.findIndex(q => q.socketId === socket.id);
-    if (existingIndex !== -1) {
-      queue.splice(existingIndex, 1); // Remove duplicate
-    }
-    
-    // Try to find a match immediately
-    const match = findBestMatch(queueUser, queue);
-    
-    if (match) {
-      // Found a match!
-      const success = createMatch(queueUser, match);
-      if (!success) {
-        // Match creation failed, add back to queue
-        queue.push(queueUser);
-        socket.emit('queue-status', { 
-          position: queue.length,
-          estimatedWait: queue.length * 15,
-          message: 'Looking for someone with similar interests...'
-        });
-      }
-    } else {
-      // No match found, add to queue
+ // Also update your join-queue handler to clean up any existing queue entries:
+socket.on('join-queue', (queueData) => {
+  logger.info(`🔍 User ${socket.id} joined queue:`, queueData);
+  console.log(`🔍 User ${socket.id} joined queue:`, queueData);
+  
+  const user = connectedUsers.get(socket.id);
+  if (!user) {
+    console.error(`❌ User ${socket.id} not found in connectedUsers`);
+    return;
+  }
+  
+  // Update user data
+  const updatedUser = {
+    ...user,
+    interests: queueData.interests || [],
+    mode: queueData.mode || 'text',
+    inQueue: true
+  };
+  connectedUsers.set(socket.id, updatedUser);
+  
+  // Determine which queue to use
+  const queue = queueData.mode === 'video' ? matchingQueue.videoQueue : matchingQueue.textQueue;
+  
+  // IMPORTANT: Remove any existing entries for this user first
+  const existingIndex = queue.findIndex(q => q.socketId === socket.id);
+  if (existingIndex !== -1) {
+    queue.splice(existingIndex, 1);
+    console.log(`🔄 Removed duplicate entry for ${socket.id} from queue`);
+  }
+  
+  // Create queue entry
+  const queueUser = {
+    socketId: socket.id,
+    interests: queueData.interests || [],
+    mode: queueData.mode || 'text',
+    joinedQueueAt: new Date()
+  };
+  
+  // Try to find a match immediately
+  const match = findBestMatch(queueUser, queue);
+  
+  if (match) {
+    console.log(`🎯 Found immediate match for ${socket.id} with ${match.socketId}`);
+    const success = createMatch(queueUser, match);
+    if (!success) {
+      // Match creation failed, add to queue
       queue.push(queueUser);
       socket.emit('queue-status', { 
         position: queue.length,
         estimatedWait: queue.length * 15,
-        message: queue.length === 1 ? 'You are first in queue!' : 'Looking for someone with similar interests...'
+        message: 'Looking for someone with similar interests...'
       });
-      
-      logger.info(`📋 User ${socket.id} added to ${queueData.mode} queue (position: ${queue.length})`);
-      console.log(`📋 User ${socket.id} added to ${queueData.mode} queue (position: ${queue.length})`);
     }
-  });
+  } else {
+    // No match found, add to queue
+    queue.push(queueUser);
+    socket.emit('queue-status', { 
+      position: queue.length,
+      estimatedWait: queue.length * 15,
+      message: queue.length === 1 ? 'You are first in queue!' : 'Looking for someone with similar interests...'
+    });
+    
+    console.log(`📋 User ${socket.id} added to ${queueData.mode} queue (position: ${queue.length})`);
+    logger.info(`📋 User ${socket.id} added to ${queueData.mode} queue (position: ${queue.length})`);
+  }
+});
 
-  // Handle leaving queue
+  // Add this cleanup on leave-queue as well:
   socket.on('leave-queue', () => {
     const user = connectedUsers.get(socket.id);
     if (user) {
@@ -597,12 +613,12 @@ io.on('connection', (socket) => {
       });
     }
     
-    // Remove from both queues
+    // Remove from BOTH queues to be safe
     matchingQueue.textQueue = matchingQueue.textQueue.filter(q => q.socketId !== socket.id);
     matchingQueue.videoQueue = matchingQueue.videoQueue.filter(q => q.socketId !== socket.id);
     
     logger.info(`❌ User ${socket.id} left queue`);
-    console.log(`❌ User ${socket.id} left queue`);
+    console.log(`❌ User ${socket.id} left all queues`);
   });
 
   // Handle sending messages - ENHANCED with database storage
@@ -916,53 +932,96 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle disconnect - ENHANCED with message cleanup
-  socket.on('disconnect', async (reason) => {
-    logger.info(`👋 User disconnected: ${socket.id} (${reason})`);
-    console.log(`👋 User disconnected: ${socket.id} (${reason})`);
-    
-    const user = connectedUsers.get(socket.id);
-    if (user) {
-      // Remove from queues
-      matchingQueue.textQueue = matchingQueue.textQueue.filter(q => q.socketId !== socket.id);
-      matchingQueue.videoQueue = matchingQueue.videoQueue.filter(q => q.socketId !== socket.id);
-      
-      // If user was matched, notify partner and schedule message deletion
-      if (user.isMatched && user.roomId) {
-        socket.to(user.roomId).emit('partner-disconnected');
-        
-        try {
-          // Schedule message deletion after 12 hours
-          if (chatService) {
-            await chatService.scheduleRoomDeletion(user.roomId, 12);
-            logger.info(`🗑️ Scheduled message deletion for room ${user.roomId} after disconnect`);
-          }
-        } catch (error) {
-          logger.error('❌ Error scheduling message deletion:', error);
-        }
-        
-        // Clean up match
-        const match = activeMatches.get(user.roomId);
-        if (match) {
-          const partnerId = match.user1 === socket.id ? match.user2 : match.user1;
-          const partner = connectedUsers.get(partnerId);
-          
-          if (partner) {
-            connectedUsers.set(partnerId, {
-              ...partner,
-              isMatched: false,
-              currentMatch: null,
-              roomId: null
-            });
-          }
-          
-          activeMatches.delete(user.roomId);
-        }
-      }
+// In your server.js, update the disconnect handler to properly clean up the queues:
+
+// Handle disconnect
+socket.on('disconnect', async (reason) => {
+  logger.info(`👋 User disconnected: ${socket.id} (${reason})`);
+  console.log(`👋 User disconnected: ${socket.id} (${reason})`);
+  
+  const user = connectedUsers.get(socket.id);
+  if (user) {
+    // Remove from ALL queues (both text and video)
+    const textQueueIndex = matchingQueue.textQueue.findIndex(q => q.socketId === socket.id);
+    if (textQueueIndex !== -1) {
+      matchingQueue.textQueue.splice(textQueueIndex, 1);
+      console.log(`🗑️ Removed ${socket.id} from text queue`);
     }
     
-    connectedUsers.delete(socket.id);
-  });
+    const videoQueueIndex = matchingQueue.videoQueue.findIndex(q => q.socketId === socket.id);
+    if (videoQueueIndex !== -1) {
+      matchingQueue.videoQueue.splice(videoQueueIndex, 1);
+      console.log(`🗑️ Removed ${socket.id} from video queue`);
+    }
+    
+    // If user was matched, notify partner and schedule message deletion
+    if (user.isMatched && user.roomId) {
+      socket.to(user.roomId).emit('partner-disconnected');
+      
+      try {
+        // Schedule message deletion after 12 hours
+        if (chatService) {
+          await chatService.scheduleRoomDeletion(user.roomId, 12);
+          logger.info(`🗑️ Scheduled message deletion for room ${user.roomId} after disconnect`);
+        }
+      } catch (error) {
+        logger.error('❌ Error scheduling message deletion:', error);
+      }
+      
+      // Clean up match
+      const match = activeMatches.get(user.roomId);
+      if (match) {
+        const partnerId = match.user1 === socket.id ? match.user2 : match.user1;
+        const partner = connectedUsers.get(partnerId);
+        
+        if (partner) {
+          connectedUsers.set(partnerId, {
+            ...partner,
+            isMatched: false,
+            currentMatch: null,
+            roomId: null
+          });
+        }
+        
+        activeMatches.delete(user.roomId);
+      }
+    }
+  }
+  
+  // Always delete the user from connected users
+  connectedUsers.delete(socket.id);
+  
+  // Log current queue status
+  console.log(`📊 Queue status after disconnect:
+    - Text queue: ${matchingQueue.textQueue.length} users
+    - Video queue: ${matchingQueue.videoQueue.length} users
+    - Connected users: ${connectedUsers.size}`);
+});
+
+// Also add a periodic cleanup to remove stale connections (add this near the bottom of server.js):
+setInterval(() => {
+  // Clean up queues from disconnected users
+  const connectedSocketIds = Array.from(io.sockets.sockets.keys());
+  
+  // Clean text queue
+  const originalTextLength = matchingQueue.textQueue.length;
+  matchingQueue.textQueue = matchingQueue.textQueue.filter(user => 
+    connectedSocketIds.includes(user.socketId)
+  );
+  
+  // Clean video queue
+  const originalVideoLength = matchingQueue.videoQueue.length;
+  matchingQueue.videoQueue = matchingQueue.videoQueue.filter(user => 
+    connectedSocketIds.includes(user.socketId)
+  );
+  
+  const textRemoved = originalTextLength - matchingQueue.textQueue.length;
+  const videoRemoved = originalVideoLength - matchingQueue.videoQueue.length;
+  
+  if (textRemoved > 0 || videoRemoved > 0) {
+    console.log(`🧹 Cleanup: Removed ${textRemoved} from text queue, ${videoRemoved} from video queue`);
+  }
+}, 30000); // Run every 30 seconds
 });
 
 // Error handling middleware

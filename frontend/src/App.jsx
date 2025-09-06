@@ -26,7 +26,6 @@ function App() {
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
   const [callStatus, setCallStatus] = useState('idle');
   const [webrtcError, setWebrtcError] = useState(null);
-  const [websocket, setWebsocketConnection] = useState(null);
 
   // Video refs
   const localVideoRef = useRef(null);
@@ -61,24 +60,28 @@ function App() {
     setConnectionStatus('connected');
     setCurrentPage('chat');
     setMatchingStatus('');
-    console.log("This is chat mode::", chatMode)
 
-    // Start video call if in video mode
-    if (chatMode === 'video'  && matchData.sendOffer) {
-      console.log('📞 Starting video call...');
+    // Start video call if in video mode and we're the initiator
+    if (chatMode === 'video' && matchData.sendOffer) {
+      console.log('📞 Starting video call as initiator...');
       webrtcService.startCall(matchData.partnerId);
       setCallStatus('calling');
     }
   };
 
   const handleMessageReceived = (messageData) => {
+    console.log('📨 Message received:', messageData);
     const newMessage = {
-      id: Date.now(),
+      id: messageData.id || Date.now(),
       content: messageData.content,
       sender: 'partner',
-      timestamp: new Date().toISOString()
+      timestamp: messageData.timestamp || new Date().toISOString()
     };
     setMessages(prev => [...prev, newMessage]);
+  };
+
+  const handleMessageSent = (messageData) => {
+    console.log('✅ Message sent confirmation:', messageData);
   };
 
   const handlePartnerDisconnected = () => {
@@ -87,131 +90,134 @@ function App() {
   };
 
   const handleStartChatAndVideo = async () => {
-
     try {
+      console.log('🚀 Starting chat with mode:', chatMode);
+      
       // Initialize services
-      console.log('🚀 Initializing services...');
+      socketService.connect(selectedInterests, chatMode);
+      
+      // Initialize WebRTC if video mode
+      if (chatMode === 'video') {
+        webrtcService.initialize(socketService);
+        
+        // Setup WebRTC callbacks
+        webrtcService.onLocalStream = (stream) => {
+          console.log('📹 Local stream received:', stream);
+          setLocalStream(stream);
+          if (localVideoRef.current) {
+            localVideoRef.current.srcObject = stream;
+          }
+        };
 
-      // Connect socket
-      socketService.connect(selectedInterests,chatMode);
-      setWebsocketConnection(socketService.socket);
+        webrtcService.onRemoteStream = (stream) => {
+          console.log('📺 Remote stream received:', stream);
+          setRemoteStream(stream);
+          if (remoteVideoRef.current) {
+            remoteVideoRef.current.srcObject = stream;
+          }
+        };
 
-      // Initialize WebRTC service
-      webrtcService.initialize(socketService);
-      webrtcService.getUserMedia();
-      setCallStatus('calling');
+        webrtcService.onConnectionStateChange = (state) => {
+          console.log('🔗 WebRTC connection state:', state);
+          if (state === 'connected') {
+            setCallStatus('connected');
+          } else if (state === 'failed' || state === 'disconnected') {
+            setCallStatus('idle');
+          }
+        };
 
-      // Setup WebRTC callbacks
-      webrtcService.onLocalStream = (stream) => {
-        console.log('📹 Local stream received:', stream);
-        setLocalStream(stream);
-
-        // Directly set the video element source
-        if (localVideoRef.current) {
-          localVideoRef.current.srcObject = stream;
-          console.log('✅ Local video element updated');
-        }
-      };
-
-      webrtcService.onRemoteStream = (stream) => {
-        console.log('📺 Remote stream received:', stream);
-        setRemoteStream(stream);
-        console.log("This is the remote video", remoteVideoRef.current);
-        // remoteVideoRef.current.srcObject = stream;
-
-        // Directly set the video element source
-        if (remoteVideoRef.current) {
-          console.log("This is the rea  adsjofiausd qwerj dfakldnfmote video", remoteVideoRef.current);
-          remoteVideoRef.current.srcObject = stream;
-          console.log('✅ Remote video element updated');
-        }
-      };
-
-
-      webrtcService.onConnectionStateChange = (state) => {
-        console.log('🔗 WebRTC connection state:', state);
-        if (state === 'connected') {
-          setCallStatus('connected');
-          // Join matching queue
-        } else if (state === 'failed' || state === 'disconnected') {
+        webrtcService.onError = (error) => {
+          console.error('❌ WebRTC error:', error);
+          setWebrtcError(error);
           setCallStatus('idle');
-        }
-      };
+        };
 
-      webrtcService.onError = (error) => {
-        console.error('❌ WebRTC error:', error);
-        setWebrtcError(error);
-        setCallStatus('idle');
-      };
+        // Get user media
+        await webrtcService.getUserMedia();
+        setCallStatus('calling');
+      }
 
       // Setup socket listeners
       socketService.on('match-found', handleMatchFound);
       socketService.on('message-received', handleMessageReceived);
+      socketService.on('message-sent', handleMessageSent);
       socketService.on('partner-disconnected', handlePartnerDisconnected);
 
-      console.log('🚀 Starting chat...', { chatMode, selectedInterests });
+      // Navigate to matching page
       setCurrentPage('matching');
       setMatchingStatus('Looking for someone to chat with...');
       setConnectionStatus('connecting');
       setWebrtcError(null);
 
-      console.log("This is socket service...", socketService)
-
-      // socketService.userJoined({
-      //   interests: selectedInterests,
-      //   mode: chatMode,
-      //   sessionId: Date.now().toString()
-      // });
     } catch (error) {
-      console.error('❌ Failed to get user media:', error);
-      setWebrtcError('Unable to access camera/microphone. Please check permissions and try again.');
+      console.error('❌ Failed to start chat:', error);
+      setWebrtcError('Unable to start chat. Please check your connection and try again.');
       setCurrentPage('home');
       setCallStatus('idle');
-      return;
     }
   };
 
   const handleSendMessage = () => {
-    if (messageInput.trim() && partner) {
-      const newMessage = {
-        id: Date.now(),
-        content: messageInput.trim(),
-        sender: 'you',
-        timestamp: new Date().toISOString()
-      };
-
-      setMessages(prev => [...prev, newMessage]);
-
-      // Send message via socket
-      socketService.sendMessage({
-        content: messageInput.trim(),
-        to: partner.id,
-        timestamp: new Date().toISOString()
-      });
-
-      setMessageInput('');
+    if (!messageInput.trim() || !partner) {
+      console.log('⚠️ Cannot send message: no input or no partner');
+      return;
     }
+
+    const newMessage = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+      content: messageInput.trim(),
+      sender: 'you',
+      timestamp: new Date().toISOString()
+    };
+
+    // Add to local messages immediately
+    setMessages(prev => [...prev, newMessage]);
+
+    // Send via socket with partner info
+    const messageData = {
+      content: messageInput.trim(),
+      to: partner.id,
+      roomId: partner.roomId,
+      timestamp: newMessage.timestamp
+    };
+    
+    console.log('📤 Sending message:', messageData);
+    socketService.sendMessage(messageData);
+
+    // Clear input
+    setMessageInput('');
   };
 
   const handleSkipUser = () => {
+    console.log('⏭️ Skipping to next user...');
+    
+    // Clear current chat
     setMessages([]);
     setPartner(null);
     setConnectionStatus('connecting');
     setMatchingStatus('Looking for someone else...');
 
-    // End current call and start new matching
+    // End current call if video mode
     if (chatMode === 'video') {
       webrtcService.endCall();
       setRemoteStream(null);
       setCallStatus('calling');
     }
 
-    // Skip current user and find new match
+    // Request new match
     socketService.skipUser();
+    
+    // Re-join queue
+    socketService.joinQueue({
+      interests: selectedInterests,
+      mode: chatMode
+    });
   };
 
   const handleEndChat = () => {
     console.log('🛑 Ending chat...');
+    
+    // Reset UI state
     setCurrentPage('home');
     setPartner(null);
     setMessages([]);
@@ -219,7 +225,7 @@ function App() {
     setMatchingStatus('');
     setWebrtcError(null);
 
-    // End WebRTC call
+    // End WebRTC if active
     if (chatMode === 'video') {
       webrtcService.endCall();
       setLocalStream(null);
@@ -227,8 +233,9 @@ function App() {
       setCallStatus('idle');
     }
 
-    // Disconnect from current chat
+    // Disconnect socket
     socketService.disconnectChat();
+    socketService.disconnect();
   };
 
   const toggleVideo = () => {
@@ -241,17 +248,28 @@ function App() {
     setIsAudioEnabled(enabled);
   };
 
-  // // Update video/audio status based on WebRTC service
-  // useEffect(() => {
-  //   const interval = setInterval(() => {
-  //     if (webrtcService.localStream) {
-  //       setIsVideoEnabled(webrtcService.isVideoEnabled());
-  //       setIsAudioEnabled(webrtcService.isAudioEnabled());
-  //     }
-  //   }, 1000);
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (chatMode === 'video') {
+        webrtcService.cleanup();
+      }
+      socketService.disconnect();
+    };
+  }, []);
 
-  //   return () => clearInterval(interval);
-  // }, []);
+  // Update video refs when streams change
+  useEffect(() => {
+    if (localVideoRef.current && localStream) {
+      localVideoRef.current.srcObject = localStream;
+    }
+  }, [localStream]);
+
+  useEffect(() => {
+    if (remoteVideoRef.current && remoteStream) {
+      remoteVideoRef.current.srcObject = remoteStream;
+    }
+  }, [remoteStream]);
 
   const renderHomePage = () => (
     <main className="max-w-4xl mx-auto px-4 py-12">
@@ -277,7 +295,7 @@ function App() {
         {webrtcError && (
           <div className="bg-red-50 dark:bg-red-900/20 border border-red-200 dark:border-red-800 rounded-lg p-4 mb-8 max-w-2xl mx-auto">
             <div className="text-red-800 dark:text-red-300">
-              <p className="font-semibold">Camera/Microphone Error:</p>
+              <p className="font-semibold">Error:</p>
               <p>{webrtcError}</p>
             </div>
           </div>
@@ -318,10 +336,11 @@ function App() {
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
           <button
             onClick={() => setChatMode('text')}
-            className={`p-8 border-2 rounded-xl transition-all transform hover:scale-105 ${chatMode === 'text'
+            className={`p-8 border-2 rounded-xl transition-all transform hover:scale-105 ${
+              chatMode === 'text'
                 ? 'border-blue-500 bg-blue-50 dark:bg-blue-900/20 text-blue-700 dark:text-blue-300 scale-105'
                 : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 text-gray-700 dark:text-gray-300'
-              }`}
+            }`}
           >
             <MessageCircle className="w-16 h-16 mx-auto mb-4" />
             <h4 className="text-2xl font-semibold mb-3">Text Chat</h4>
@@ -331,17 +350,12 @@ function App() {
           </button>
 
           <button
-            onClick={() => {
-              setChatMode('video');
-              console.log('Chat mode set to:', 'video');
-              // Or if you want to log the current state:
-              console.log('Current chat mode:', chatMode);
-            }}
-
-            className={`p-8 border-2 rounded-xl transition-all transform hover:scale-105 ${chatMode === 'video'
+            onClick={() => setChatMode('video')}
+            className={`p-8 border-2 rounded-xl transition-all transform hover:scale-105 ${
+              chatMode === 'video'
                 ? 'border-purple-500 bg-purple-50 dark:bg-purple-900/20 text-purple-700 dark:text-purple-300 scale-105'
                 : 'border-gray-200 dark:border-gray-700 hover:border-gray-300 text-gray-700 dark:text-gray-300'
-              }`}
+            }`}
           >
             <Video className="w-16 h-16 mx-auto mb-4" />
             <h4 className="text-2xl font-semibold mb-3">Video Call & Chat</h4>
@@ -365,10 +379,11 @@ function App() {
               <button
                 key={interest}
                 onClick={() => toggleInterest(interest)}
-                className={`px-4 py-2 rounded-full text-sm transition-colors ${selectedInterests.includes(interest)
+                className={`px-4 py-2 rounded-full text-sm transition-colors ${
+                  selectedInterests.includes(interest)
                     ? 'bg-blue-600 text-white'
                     : 'bg-gray-100 dark:bg-gray-700 text-gray-700 dark:text-gray-300 hover:bg-gray-200 dark:hover:bg-gray-600'
-                  }`}
+                }`}
               >
                 {interest}
               </button>
@@ -469,8 +484,6 @@ function App() {
                 placeholder="Loading camera..."
                 className="w-full h-full"
                 videoRef={localVideoRef}
-                onVideoLoad={() => console.log('✅ Local video loaded in matching')}
-                onVideoError={(error) => console.error('❌ Local video error in matching:', error)}
               />
             </div>
             <p className="text-sm text-green-600 dark:text-green-400">
@@ -514,10 +527,11 @@ function App() {
                 <>
                   <button
                     onClick={toggleVideo}
-                    className={`p-2 rounded-lg transition-colors ${isVideoEnabled
+                    className={`p-2 rounded-lg transition-colors ${
+                      isVideoEnabled
                         ? 'bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400'
                         : 'bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-400'
-                      }`}
+                    }`}
                     title={isVideoEnabled ? 'Turn off camera' : 'Turn on camera'}
                   >
                     {isVideoEnabled ? <Video className="w-4 h-4" /> : <VideoOffIcon className="w-4 h-4" />}
@@ -525,10 +539,11 @@ function App() {
 
                   <button
                     onClick={toggleAudio}
-                    className={`p-2 rounded-lg transition-colors ${isAudioEnabled
+                    className={`p-2 rounded-lg transition-colors ${
+                      isAudioEnabled
                         ? 'bg-blue-100 dark:bg-blue-900 text-blue-600 dark:text-blue-400'
                         : 'bg-red-100 dark:bg-red-900 text-red-600 dark:text-red-400'
-                      }`}
+                    }`}
                     title={isAudioEnabled ? 'Mute microphone' : 'Unmute microphone'}
                   >
                     {isAudioEnabled ? <Mic className="w-4 h-4" /> : <MicOff className="w-4 h-4" />}
@@ -555,7 +570,7 @@ function App() {
           </div>
         </div>
 
-        <div className="flex h-full">
+        <div className="flex h-full" style={{ height: 'calc(100vh - 200px)' }}>
           {/* Video Section (if video mode) */}
           {chatMode === 'video' && (
             <div className="w-1/2 bg-black relative">
@@ -565,10 +580,8 @@ function App() {
                 muted={false}
                 mirrored={false}
                 placeholder="Waiting for partner's video..."
-                className="w-full h-full"
+                className="w-full h-full object-cover"
                 videoRef={remoteVideoRef}
-                onVideoLoad={() => console.log('✅ Remote video loaded')}
-                onVideoError={(error) => console.error('❌ Remote video error:', error)}
               />
 
               {/* Local Video (Picture in Picture) */}
@@ -578,10 +591,8 @@ function App() {
                   muted={true}
                   mirrored={true}
                   placeholder="Your Video"
-                  className="w-full h-full"
+                  className="w-full h-full object-cover"
                   videoRef={localVideoRef}
-                  onVideoLoad={() => console.log('✅ Local PIP video loaded')}
-                  onVideoError={(error) => console.error('❌ Local PIP video error:', error)}
                 />
               </div>
 
@@ -590,20 +601,22 @@ function App() {
                 <div className="flex items-center space-x-4 bg-black bg-opacity-70 text-white px-6 py-3 rounded-full backdrop-blur-sm">
                   <button
                     onClick={toggleAudio}
-                    className={`p-3 rounded-full transition-colors ${isAudioEnabled
+                    className={`p-3 rounded-full transition-colors ${
+                      isAudioEnabled
                         ? 'hover:bg-gray-600'
                         : 'bg-red-600 hover:bg-red-700'
-                      }`}
+                    }`}
                     title={isAudioEnabled ? 'Mute microphone' : 'Unmute microphone'}
                   >
                     {isAudioEnabled ? <Mic className="w-5 h-5" /> : <MicOff className="w-5 h-5" />}
                   </button>
                   <button
                     onClick={toggleVideo}
-                    className={`p-3 rounded-full transition-colors ${isVideoEnabled
+                    className={`p-3 rounded-full transition-colors ${
+                      isVideoEnabled
                         ? 'hover:bg-gray-600'
                         : 'bg-red-600 hover:bg-red-700'
-                      }`}
+                    }`}
                     title={isVideoEnabled ? 'Turn off camera' : 'Turn on camera'}
                   >
                     {isVideoEnabled ? <Video className="w-5 h-5" /> : <VideoOffIcon className="w-5 h-5" />}
@@ -613,8 +626,8 @@ function App() {
             </div>
           )}
 
-          {/* Chat Section */}
-          <div className={`${chatMode === 'video' ? 'w-1/2' : 'w-full'} flex flex-col`}>
+          {/* Chat Section - Always visible */}
+          <div className={`${chatMode === 'video' ? 'w-1/2' : 'w-full'} flex flex-col bg-white dark:bg-gray-800`}>
             {/* Messages */}
             <div className="flex-1 p-4 overflow-y-auto">
               {messages.length === 0 ? (
@@ -637,10 +650,11 @@ function App() {
                       className={`flex ${message.sender === 'you' ? 'justify-end' : 'justify-start'}`}
                     >
                       <div
-                        className={`max-w-xs px-4 py-2 rounded-lg ${message.sender === 'you'
+                        className={`max-w-xs px-4 py-2 rounded-lg ${
+                          message.sender === 'you'
                             ? 'bg-blue-600 text-white rounded-br-none'
                             : 'bg-gray-200 dark:bg-gray-700 text-gray-900 dark:text-white rounded-bl-none'
-                          }`}
+                        }`}
                       >
                         <p className="text-sm">{message.content}</p>
                         <p className="text-xs opacity-75 mt-1">
@@ -680,8 +694,9 @@ function App() {
   );
 
   return (
-    <div className={`min-h-screen transition-colors duration-300 ${theme === 'dark' ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'
-      }`}>
+    <div className={`min-h-screen transition-colors duration-300 ${
+      theme === 'dark' ? 'bg-gray-900 text-white' : 'bg-gray-50 text-gray-900'
+    }`}>
       {/* Header */}
       <header className="bg-blue-600 text-white shadow-lg">
         <div className="max-w-6xl mx-auto px-4 py-4">

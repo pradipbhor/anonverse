@@ -1,6 +1,4 @@
 import io from 'socket.io-client';
-import webrtcService from './webrtcService';
-
 
 class SocketService {
   constructor() {
@@ -10,11 +8,12 @@ class SocketService {
     this.maxReconnectAttempts = 5;
     this.reconnectDelay = 1000;
     this.listeners = new Map();
-    this.webrtcService = null;
+    this.pendingActions = [];
   }
 
-  connect(selectedInterests , chatMode) {
-    const socketURL = 'ws://localhost:5000'; //process.env.REACT_APP_SOCKET_URL || 
+  connect(selectedInterests, chatMode) {
+    // Use window.location for dynamic URL or fallback to localhost
+    const socketURL = window.REACT_APP_SOCKET_URL || 'ws://localhost:5000';
     
     this.socket = io(socketURL, {
       transports: ['websocket', 'polling'],
@@ -22,101 +21,99 @@ class SocketService {
       reconnection: true,
       reconnectionDelay: this.reconnectDelay,
       reconnectionAttempts: this.maxReconnectAttempts,
-      maxReconnectionAttempts: this.maxReconnectAttempts,
       forceNew: true
     });
-    this.setupEventListeners(selectedInterests , chatMode);
+
+    this.setupEventListeners(selectedInterests, chatMode);
     return this.socket;
   }
 
-  setupEventListeners(selectedInterests , chatMode) {
+  setupEventListeners(selectedInterests, chatMode) {
     if (!this.socket) return;
 
     this.socket.on('connect', () => {
-      console.log('Socket connected:', this.socket.id);
+      console.log('✅ Socket connected:', this.socket.id);
       this.isConnected = true;
       this.reconnectAttempts = 0;
-      this.emit('connection-status', { connected: true, socketId: this.socket.id });
-      this.userJoined({ interests: selectedInterests, mode: chatMode, sessionId: Date.now().toString() });
-      this.joinQueue({ interests: selectedInterests, mode: chatMode, sessionId: Date.now().toString() });
-     // this.webrtcService = webrtcService.initialize(this.socket);
+      
+      // Add a delay before joining to ensure all listeners are set up
+      setTimeout(() => {
+        // Send user-join event first
+        this.socket.emit('user-join', {
+          interests: selectedInterests || [],
+          mode: chatMode || 'text',
+          sessionId: Date.now().toString()
+        });
 
+        // Then join the queue after another small delay
+        setTimeout(() => {
+          this.socket.emit('join-queue', {
+            interests: selectedInterests || [],
+            mode: chatMode || 'text',
+            sessionId: Date.now().toString()
+          });
+        }, 200);
+      }, 500); // Wait 500ms before joining to ensure all listeners are ready
+
+      // Process any pending actions
+      this.processPendingActions();
     });
 
     this.socket.on('disconnect', (reason) => {
-      console.log('Socket disconnected:', reason);
+      console.log('❌ Socket disconnected:', reason);
       this.isConnected = false;
-      this.emit('connection-status', { connected: false, reason });
     });
 
     this.socket.on('connect_error', (error) => {
-      console.error('Socket connection error:', error);
+      console.error('❌ Socket connection error:', error);
       this.reconnectAttempts++;
-      this.emit('connection-error', { error, attempts: this.reconnectAttempts });
     });
 
     this.socket.on('reconnect', (attemptNumber) => {
-      console.log('Socket reconnected after', attemptNumber, 'attempts');
+      console.log('🔄 Socket reconnected after', attemptNumber, 'attempts');
       this.reconnectAttempts = 0;
-      this.emit('reconnected', { attempts: attemptNumber });
-    });
-
-    this.socket.on('reconnect_attempt', (attemptNumber) => {
-      console.log('Socket reconnection attempt:', attemptNumber);
-      this.emit('reconnecting', { attempt: attemptNumber });
-    });
-
-    this.socket.on('reconnect_failed', () => {
-      console.error('Socket reconnection failed');
-      this.emit('reconnect-failed');
     });
   }
 
-  // Join matching queue
+  processPendingActions() {
+    while (this.pendingActions.length > 0) {
+      const action = this.pendingActions.shift();
+      action();
+    }
+  }
+
+  // Send message with proper error handling
+  sendMessage(messageData) {
+    if (this.socket && this.isConnected) {
+      console.log('📤 Sending message:', messageData);
+      this.socket.emit('send-message', messageData);
+    } else {
+      console.warn('⚠️ Socket not connected, queuing message');
+      this.pendingActions.push(() => this.sendMessage(messageData));
+    }
+  }
+
+  // Join queue with proper timing
   joinQueue(userData) {
-    console.log("We are calling join-queueue............",this.socket ,"===",this.isConnected);
     if (this.socket && this.isConnected) {
-      console.log("We are calling join-queueue............");
+      console.log('🎯 Joining queue:', userData);
       this.socket.emit('join-queue', userData);
-    }
-  }
-  userJoined(userData) {
-    if (this.socket && this.isConnected) {
-      this.socket.emit('user-join', userData);
+    } else {
+      this.pendingActions.push(() => this.joinQueue(userData));
     }
   }
 
-  // Leave matching queue
+  // Leave queue
   leaveQueue() {
     if (this.socket && this.isConnected) {
       this.socket.emit('leave-queue');
     }
   }
 
-  // Send chat message
-  sendMessage(messageData) {
-    if (this.socket && this.isConnected) {
-      this.socket.emit('send-message', messageData);
-    }
-  }
-
-  // Send typing indicator
-  sendTyping() {
-    if (this.socket && this.isConnected) {
-      this.socket.emit('typing');
-    }
-  }
-
-  // Stop typing indicator
-  stopTyping() {
-    if (this.socket && this.isConnected) {
-      this.socket.emit('stop-typing');
-    }
-  }
-
-  // Skip current user
+  // Skip user
   skipUser() {
     if (this.socket && this.isConnected) {
+      console.log('⏭️ Skipping user');
       this.socket.emit('skip-user');
     }
   }
@@ -128,22 +125,25 @@ class SocketService {
     }
   }
 
-  // Disconnect from current chat
+  // Disconnect from chat
   disconnectChat() {
     if (this.socket && this.isConnected) {
+      console.log('👋 Disconnecting from chat');
       this.socket.emit('disconnect-chat');
     }
   }
 
-  // WebRTC signaling
+  // WebRTC signaling methods
   sendWebRTCOffer(offerData) {
     if (this.socket && this.isConnected) {
+      console.log('📹 Sending WebRTC offer');
       this.socket.emit('webrtc-offer', offerData);
     }
   }
 
   sendWebRTCAnswer(answerData) {
     if (this.socket && this.isConnected) {
+      console.log('📹 Sending WebRTC answer');
       this.socket.emit('webrtc-answer', answerData);
     }
   }
@@ -154,32 +154,38 @@ class SocketService {
     }
   }
 
-  // Generic event emission
-  emit(event, data) {
+  // Typing indicators
+  sendTyping() {
     if (this.socket && this.isConnected) {
-      this.socket.emit(event, data);
+      this.socket.emit('typing');
     }
   }
 
-  // Event listening with automatic cleanup
+  stopTyping() {
+    if (this.socket && this.isConnected) {
+      this.socket.emit('stop-typing');
+    }
+  }
+
+  // Event listener management
   on(event, callback) {
     if (this.socket) {
       this.socket.on(event, callback);
       
-      // Store listener for cleanup
+      // Store for cleanup
       if (!this.listeners.has(event)) {
         this.listeners.set(event, []);
       }
       this.listeners.get(event).push(callback);
+      
+      console.log(`📡 Listener added for event: ${event}`);
     }
   }
 
-  // Remove specific event listener
   off(event, callback) {
     if (this.socket) {
       this.socket.off(event, callback);
       
-      // Remove from stored listeners
       if (this.listeners.has(event)) {
         const callbacks = this.listeners.get(event);
         const index = callbacks.indexOf(callback);
@@ -190,12 +196,16 @@ class SocketService {
     }
   }
 
-  // Remove all listeners for an event
   removeAllListeners(event) {
     if (this.socket) {
       this.socket.removeAllListeners(event);
       this.listeners.delete(event);
     }
+  }
+
+  // Get socket instance
+  getSocket() {
+    return this.socket;
   }
 
   // Get connection status
@@ -210,17 +220,20 @@ class SocketService {
   // Disconnect socket
   disconnect() {
     if (this.socket) {
-      // Clean up all listeners
+      console.log('🔌 Disconnecting socket');
+      
+      // Clear all listeners
       this.listeners.clear();
       
       this.socket.disconnect();
       this.socket = null;
       this.isConnected = false;
       this.reconnectAttempts = 0;
+      this.pendingActions = [];
     }
   }
 
-  // Force reconnection
+  // Force reconnect
   forceReconnect() {
     if (this.socket) {
       this.socket.disconnect();
@@ -228,7 +241,7 @@ class SocketService {
     }
   }
 
-  // Check if socket exists and is connected
+  // Check if ready
   isSocketReady() {
     return this.socket && this.isConnected;
   }
