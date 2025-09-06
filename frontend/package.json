@@ -1,7 +1,7 @@
 {
     "name": "anonverse-frontend",
     "version": "1.0.0",
-    "description": "Anonverse - Anonymous chat platform frontend",
+    "description": "Anonverse - Anonymous chat and video platform frontend",
     "private": true,
     "dependencies": {
         "axios": "^1.6.0",
