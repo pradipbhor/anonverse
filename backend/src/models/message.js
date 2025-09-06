@@ -56,7 +56,7 @@ const messageSchema = new mongoose.Schema({
 messageSchema.index({ roomId: 1, createdAt: -1 });
 messageSchema.index({ senderId: 1, createdAt: -1 });
 messageSchema.index({ recipientId: 1, createdAt: -1 });
-messageSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
+// messageSchema.index({ expiresAt: 1 }, { expireAfterSeconds: 0 });
 
 // Virtual for checking if message is expired
 messageSchema.virtual('isExpired').get(function() {
