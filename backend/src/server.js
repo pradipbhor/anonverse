@@ -7,6 +7,10 @@ const rateLimit = require('express-rate-limit');
 const compression = require('compression');
 require('dotenv').config();
 
+// Import logger and chat service
+const logger = require('./Loaders/Logger');
+const { createChatService } = require('./services/ChatService');
+
 // Create Express app
 const app = express();
 const server = http.createServer(app);
@@ -67,6 +71,7 @@ const moderationLimiter = rateLimit({
 // Services initialization
 let redisClient = null;
 let mongoConnected = false;
+let chatService = null;
 
 async function initializeServices() {
   try {
@@ -78,11 +83,23 @@ async function initializeServices() {
       });
       
       redisClient.on('error', (err) => {
+        logger.error('Redis error:', err.message);
         console.log('Redis error:', err.message);
       });
       
       await redisClient.connect();
+      logger.info('✅ Connected to Redis');
       console.log('✅ Connected to Redis');
+      
+      // Initialize chat service with Redis
+      chatService = createChatService(redisClient);
+      logger.info('✅ Chat service initialized with Redis');
+      console.log('✅ Chat service initialized with Redis');
+    } else {
+      // Initialize chat service without Redis (will use MongoDB only)
+      chatService = createChatService(null);
+      logger.info('✅ Chat service initialized without Redis (MongoDB only)');
+      console.log('✅ Chat service initialized without Redis');
     }
     
     // MongoDB connection
@@ -93,10 +110,12 @@ async function initializeServices() {
         useUnifiedTopology: true,
       });
       mongoConnected = true;
+      logger.info('✅ Connected to MongoDB');
       console.log('✅ Connected to MongoDB');
     }
     
   } catch (error) {
+    logger.error('⚠️  Service initialization error:', error.message);
     console.log('⚠️  Service initialization error:', error.message);
   }
 }
@@ -110,7 +129,8 @@ app.get('/health', (req, res) => {
     environment: process.env.NODE_ENV || 'development',
     services: {
       redis: redisClient ? 'connected' : 'disconnected',
-      mongodb: mongoConnected ? 'connected' : 'disconnected'
+      mongodb: mongoConnected ? 'connected' : 'disconnected',
+      chatService: chatService ? 'initialized' : 'not initialized'
     }
   });
 });
@@ -129,19 +149,44 @@ app.get('/api/chat/test', chatLimiter, (req, res) => {
   });
 });
 
-app.post('/api/chat/send-message', chatLimiter, (req, res) => {
-  const { content, to } = req.body;
+app.post('/api/chat/send-message', chatLimiter, async (req, res) => {
+  const { content, to, roomId } = req.body;
   
   if (!content || !to) {
     return res.status(400).json({ error: 'Content and recipient required' });
   }
   
-  res.json({ 
-    success: true, 
-    message: 'Message sent',
-    messageId: Date.now().toString(),
-    timestamp: new Date().toISOString()
-  });
+  try {
+    if (chatService && roomId) {
+      const message = await chatService.sendMessage({
+        roomId,
+        senderId: req.body.senderId || 'api-user',
+        recipientId: to,
+        content,
+        type: 'text'
+      });
+      
+      res.json({ 
+        success: true, 
+        message: 'Message sent and saved',
+        messageData: message,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.json({ 
+        success: true, 
+        message: 'Message sent',
+        messageId: Date.now().toString(),
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    logger.error('Error sending message via API:', error);
+    res.status(500).json({ 
+      success: false, 
+      error: 'Failed to send message' 
+    });
+  }
 });
 
 app.post('/api/chat/report', chatLimiter, (req, res) => {
@@ -157,6 +202,32 @@ app.post('/api/chat/report', chatLimiter, (req, res) => {
     reportId: `report_${Date.now()}`,
     timestamp: new Date().toISOString()
   });
+});
+
+// Get chat statistics
+app.get('/api/chat/stats', async (req, res) => {
+  try {
+    if (chatService) {
+      const stats = await chatService.getStats();
+      res.json({
+        success: true,
+        stats,
+        timestamp: new Date().toISOString()
+      });
+    } else {
+      res.json({
+        success: true,
+        stats: { message: 'Chat service not initialized' },
+        timestamp: new Date().toISOString()
+      });
+    }
+  } catch (error) {
+    logger.error('Error getting chat stats:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to get chat statistics'
+    });
+  }
 });
 
 // =========================
@@ -392,7 +463,7 @@ function createMatch(user1, user2) {
     partnerId: user2.socketId,
     commonInterests,
     mode: user1.mode,
-    sendOffer:true,
+    sendOffer: true,
     roomId
   };
   
@@ -414,6 +485,7 @@ function createMatch(user1, user2) {
     socket1.emit('match-found', matchData1);
     socket2.emit('match-found', matchData2);
     
+    logger.info(`💑 Match created: ${user1.socketId} ↔ ${user2.socketId} (Room: ${roomId})`);
     console.log(`💑 Match created: ${user1.socketId} ↔ ${user2.socketId} (Room: ${roomId})`);
     return true;
   }
@@ -423,6 +495,7 @@ function createMatch(user1, user2) {
 
 // Socket.IO connection handling
 io.on('connection', (socket) => {
+  logger.info(`👤 User connected: ${socket.id}`);
   console.log(`👤 User connected: ${socket.id}`);
   
   // Add user to connected users
@@ -447,11 +520,13 @@ io.on('connection', (socket) => {
         joinedAt: new Date()
       });
     }
+    logger.info(`✅ User ${socket.id} joined with data:`, userData);
     console.log(`✅ User ${socket.id} joined with data:`, userData);
   });
 
   // Handle joining matching queue
   socket.on('join-queue', (queueData) => {
+    logger.info(`🔍 User ${socket.id} joined queue:`, queueData);
     console.log(`🔍 User ${socket.id} joined queue:`, queueData);
     
     const user = connectedUsers.get(socket.id);
@@ -506,6 +581,7 @@ io.on('connection', (socket) => {
         message: queue.length === 1 ? 'You are first in queue!' : 'Looking for someone with similar interests...'
       });
       
+      logger.info(`📋 User ${socket.id} added to ${queueData.mode} queue (position: ${queue.length})`);
       console.log(`📋 User ${socket.id} added to ${queueData.mode} queue (position: ${queue.length})`);
     }
   });
@@ -525,51 +601,173 @@ io.on('connection', (socket) => {
     matchingQueue.textQueue = matchingQueue.textQueue.filter(q => q.socketId !== socket.id);
     matchingQueue.videoQueue = matchingQueue.videoQueue.filter(q => q.socketId !== socket.id);
     
+    logger.info(`❌ User ${socket.id} left queue`);
     console.log(`❌ User ${socket.id} left queue`);
   });
 
-  // Handle sending messages
-  socket.on('send-message', (messageData) => {
+  // Handle sending messages - ENHANCED with database storage
+  socket.on('send-message', async (messageData) => {
+    logger.info(`💬 Message from ${socket.id}:`, { 
+      preview: messageData.content?.substring(0, 50) 
+    });
     console.log(`💬 Message from ${socket.id}:`, messageData.content?.substring(0, 50));
     
     const user = connectedUsers.get(socket.id);
     if (!user || !user.isMatched || !user.roomId) {
+      logger.warn(`❌ User ${socket.id} not in a match`);
       console.log(`❌ User ${socket.id} not in a match`);
+      socket.emit('message-error', { 
+        error: 'Not in an active chat session' 
+      });
       return;
     }
-    
-    const message = {
-      id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
-      content: messageData.content,
-      senderId: socket.id,
-      timestamp: new Date().toISOString(),
-      type: 'text'
-    };
 
-    // Send to partner in the same room
-    socket.to(user.roomId).emit('message-received', message);
-    
-    // Acknowledge to sender
-    socket.emit('message-sent', message);
+    try {
+      // Save message to database if chat service is available
+      if (chatService) {
+        const savedMessage = await chatService.sendMessage({
+          roomId: user.roomId,
+          senderId: socket.id,
+          recipientId: user.currentMatch,
+          content: messageData.content,
+          type: messageData.type || 'text',
+          metadata: {
+            interests: user.interests || [],
+            mode: user.mode || 'text'
+          }
+        });
+
+        // Send to partner in the same room
+        socket.to(user.roomId).emit('message-received', savedMessage);
+        
+        // Acknowledge to sender with saved message details
+        socket.emit('message-sent', savedMessage);
+        
+        logger.info('✅ Message delivered and saved', { 
+          messageId: savedMessage.id,
+          roomId: user.roomId 
+        });
+      } else {
+        // Fallback if chat service is not initialized
+        const message = {
+          id: `msg_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`,
+          content: messageData.content,
+          senderId: socket.id,
+          timestamp: new Date().toISOString(),
+          type: 'text'
+        };
+
+        socket.to(user.roomId).emit('message-received', message);
+        socket.emit('message-sent', message);
+      }
+      
+    } catch (error) {
+      logger.error('❌ Error sending message:', error);
+      socket.emit('message-error', { 
+        error: 'Failed to send message' 
+      });
+    }
   });
 
-  // Handle typing indicators
-  socket.on('typing', () => {
+  // NEW: Handle getting message history
+  socket.on('get-messages', async (data) => {
+    const user = connectedUsers.get(socket.id);
+    if (!user || !user.roomId) {
+      socket.emit('messages-error', { 
+        error: 'No active chat session' 
+      });
+      return;
+    }
+
+    try {
+      if (chatService) {
+        const messages = await chatService.getRoomMessages(user.roomId, {
+          limit: data?.limit || 50,
+          skip: data?.skip || 0
+        });
+        
+        socket.emit('messages-loaded', { 
+          messages,
+          roomId: user.roomId 
+        });
+        
+        logger.info('📜 Message history sent', { 
+          userId: socket.id,
+          roomId: user.roomId,
+          count: messages.length 
+        });
+      } else {
+        socket.emit('messages-loaded', { 
+          messages: [],
+          roomId: user.roomId 
+        });
+      }
+      
+    } catch (error) {
+      logger.error('❌ Error getting messages:', error);
+      socket.emit('messages-error', { 
+        error: 'Failed to load messages' 
+      });
+    }
+  });
+
+  // Handle typing indicators - ENHANCED with Redis
+  socket.on('typing', async () => {
     const user = connectedUsers.get(socket.id);
     if (user && user.isMatched && user.roomId) {
+      // Store typing indicator in Redis if available
+      if (chatService) {
+        await chatService.setTypingIndicator(user.roomId, socket.id, true);
+      }
       socket.to(user.roomId).emit('partner-typing', true);
     }
   });
 
-  socket.on('stop-typing', () => {
+  socket.on('stop-typing', async () => {
     const user = connectedUsers.get(socket.id);
     if (user && user.isMatched && user.roomId) {
+      // Remove typing indicator from Redis if available
+      if (chatService) {
+        await chatService.setTypingIndicator(user.roomId, socket.id, false);
+      }
       socket.to(user.roomId).emit('partner-typing', false);
+    }
+  });
+
+  // NEW: Handle marking messages as read
+  socket.on('mark-messages-read', async (data) => {
+    const user = connectedUsers.get(socket.id);
+    if (!user || !user.roomId) return;
+
+    try {
+      if (chatService) {
+        const count = await chatService.markRoomMessagesAsRead(
+          user.roomId, 
+          socket.id
+        );
+        
+        socket.emit('messages-marked-read', { 
+          count,
+          roomId: user.roomId 
+        });
+        
+        // Notify sender that messages were read
+        if (user.currentMatch) {
+          socket.to(user.roomId).emit('messages-read-by-partner', {
+            readBy: socket.id,
+            count
+          });
+        }
+      }
+      
+    } catch (error) {
+      logger.error('❌ Error marking messages as read:', error);
     }
   });
 
   // Handle user reports
   socket.on('report-user', (reportData) => {
+    logger.info(`🚨 Report from ${socket.id}:`, reportData);
     console.log(`🚨 Report from ${socket.id}:`, reportData);
     
     socket.emit('report-submitted', { 
@@ -579,13 +777,24 @@ io.on('connection', (socket) => {
     });
   });
 
-  // Handle skip user
-  socket.on('skip-user', () => {
+  // Handle skip user - ENHANCED with message cleanup
+  socket.on('skip-user', async () => {
     const user = connectedUsers.get(socket.id);
     if (!user || !user.isMatched || !user.roomId) return;
     
+    logger.info(`⏭️  User ${socket.id} skipped partner`);
     console.log(`⏭️  User ${socket.id} skipped partner`);
     
+    try {
+      // Schedule message deletion after 12 hours
+      if (chatService) {
+        await chatService.scheduleRoomDeletion(user.roomId, 12);
+        logger.info(`🗑️ Scheduled message deletion for room ${user.roomId} after skip`);
+      }
+    } catch (error) {
+      logger.error('❌ Error scheduling message deletion:', error);
+    }
+    
     // Notify partner
     socket.to(user.roomId).emit('partner-disconnected');
     
@@ -619,12 +828,23 @@ io.on('connection', (socket) => {
     socket.leave(user.roomId);
   });
 
-  // Handle disconnect chat
-  socket.on('disconnect-chat', () => {
+  // Handle disconnect chat - ENHANCED with message cleanup
+  socket.on('disconnect-chat', async () => {
     const user = connectedUsers.get(socket.id);
     if (!user || !user.isMatched || !user.roomId) return;
     
+    logger.info(`🛑 User ${socket.id} disconnected from chat`);
     console.log(`🛑 User ${socket.id} disconnected from chat`);
+    
+    try {
+      // Schedule message deletion after 12 hours
+      if (chatService) {
+        await chatService.scheduleRoomDeletion(user.roomId, 12);
+        logger.info(`🗑️ Scheduled message deletion for room ${user.roomId} after 12 hours`);
+      }
+    } catch (error) {
+      logger.error('❌ Error scheduling message deletion:', error);
+    }
     
     // Notify partner
     socket.to(user.roomId).emit('partner-disconnected');
@@ -659,8 +879,9 @@ io.on('connection', (socket) => {
     socket.leave(user.roomId);
   });
 
-  // Handle WebRTC signaling
+  // Handle WebRTC signaling - KEEP EXACTLY AS YOUR ORIGINAL
   socket.on('webrtc-offer', (data) => {
+    logger.info(`📹 WebRTC offer from ${socket.id} to ${data.to}`);
     console.log(`📹 WebRTC offer from ${socket.id} to ${data.to}`);
     const user = connectedUsers.get(socket.id);
     if (user && user.isMatched && user.roomId) {
@@ -672,6 +893,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('webrtc-answer', (data) => {
+    logger.info(`📹 WebRTC answer from ${socket.id} to ${data.to}`);
     console.log(`📹 WebRTC answer from ${socket.id} to ${data.to}`);
     const user = connectedUsers.get(socket.id);
     if (user && user.isMatched && user.roomId) {
@@ -683,6 +905,7 @@ io.on('connection', (socket) => {
   });
 
   socket.on('webrtc-ice-candidate', (data) => {
+    logger.info(`🧊 ICE candidate from ${socket.id}`);
     console.log(`🧊 ICE candidate from ${socket.id}`);
     const user = connectedUsers.get(socket.id);
     if (user && user.isMatched && user.roomId) {
@@ -693,8 +916,9 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Handle disconnect
-  socket.on('disconnect', (reason) => {
+  // Handle disconnect - ENHANCED with message cleanup
+  socket.on('disconnect', async (reason) => {
+    logger.info(`👋 User disconnected: ${socket.id} (${reason})`);
     console.log(`👋 User disconnected: ${socket.id} (${reason})`);
     
     const user = connectedUsers.get(socket.id);
@@ -703,9 +927,19 @@ io.on('connection', (socket) => {
       matchingQueue.textQueue = matchingQueue.textQueue.filter(q => q.socketId !== socket.id);
       matchingQueue.videoQueue = matchingQueue.videoQueue.filter(q => q.socketId !== socket.id);
       
-      // If user was matched, notify partner
+      // If user was matched, notify partner and schedule message deletion
       if (user.isMatched && user.roomId) {
         socket.to(user.roomId).emit('partner-disconnected');
+        
+        try {
+          // Schedule message deletion after 12 hours
+          if (chatService) {
+            await chatService.scheduleRoomDeletion(user.roomId, 12);
+            logger.info(`🗑️ Scheduled message deletion for room ${user.roomId} after disconnect`);
+          }
+        } catch (error) {
+          logger.error('❌ Error scheduling message deletion:', error);
+        }
         
         // Clean up match
         const match = activeMatches.get(user.roomId);
@@ -733,6 +967,7 @@ io.on('connection', (socket) => {
 
 // Error handling middleware
 app.use((err, req, res, next) => {
+  logger.error('❌ Unhandled error:', err);
   console.error('❌ Unhandled error:', err);
   res.status(500).json({ 
     error: 'Internal server error',
@@ -753,28 +988,33 @@ app.use('*', (req, res) => {
 
 // Graceful shutdown
 process.on('SIGTERM', async () => {
+  logger.info('🛑 SIGTERM received, shutting down gracefully');
   console.log('🛑 SIGTERM received, shutting down gracefully');
   
   try {
     if (redisClient) {
       await redisClient.quit();
+      logger.info('✅ Redis connection closed');
       console.log('✅ Redis connection closed');
     }
     
     if (mongoConnected) {
       const mongoose = require('mongoose');
       await mongoose.connection.close();
+      logger.info('✅ MongoDB connection closed');
       console.log('✅ MongoDB connection closed');
     }
     
     server.close(() => {
+      logger.info('✅ Server closed');
       console.log('✅ Server closed');
       process.exit(0);
     });
   } catch (error) {
+    logger.error('❌ Error during graceful shutdown:', error);
     console.error('❌ Error during graceful shutdown:', error);
     process.exit(1);
   }
 });
 
-module.exports = { app, server, io ,initializeServices};
+module.exports = { app, server, io, initializeServices };

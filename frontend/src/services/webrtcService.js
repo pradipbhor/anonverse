@@ -221,6 +221,7 @@ class WebRTCService {
       console.log('✅ Local description set');
 
       if (this.socketService) {
+        console.log("This is the socket service::",this.socketService)
         this.socketService.sendWebRTCOffer({
           offer: offer,
           to: partnerId

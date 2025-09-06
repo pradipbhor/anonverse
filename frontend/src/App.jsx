@@ -26,6 +26,7 @@ function App() {
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
   const [callStatus, setCallStatus] = useState('idle');
   const [webrtcError, setWebrtcError] = useState(null);
+  const [websocket, setWebsocketConnection] = useState(null);
 
   // Video refs
   const localVideoRef = useRef(null);
@@ -92,22 +93,8 @@ function App() {
       console.log('🚀 Initializing services...');
 
       // Connect socket
-      socketService.connect();
-      socketService.on('connect', () => {
-        console.log('✅ Socket connected, now joining queue...');
-        
-        // Send join-queue event after connection is established
-        socketService.userJoined({
-          interests: selectedInterests,
-          mode: chatMode,
-          sessionId: Date.now().toString()
-        });
-        socketService.joinQueue({
-          interests: selectedInterests,
-          mode: chatMode,
-          sessionId: Date.now().toString()
-        });
-      });
+      socketService.connect(selectedInterests,chatMode);
+      setWebsocketConnection(socketService.socket);
 
       // Initialize WebRTC service
       webrtcService.initialize(socketService);

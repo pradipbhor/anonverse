@@ -1,4 +1,6 @@
 import io from 'socket.io-client';
+import webrtcService from './webrtcService';
+
 
 class SocketService {
   constructor() {
@@ -8,9 +10,10 @@ class SocketService {
     this.maxReconnectAttempts = 5;
     this.reconnectDelay = 1000;
     this.listeners = new Map();
+    this.webrtcService = null;
   }
 
-  connect() {
+  connect(selectedInterests , chatMode) {
     const socketURL = 'ws://localhost:5000'; //process.env.REACT_APP_SOCKET_URL || 
     
     this.socket = io(socketURL, {
@@ -22,12 +25,11 @@ class SocketService {
       maxReconnectionAttempts: this.maxReconnectAttempts,
       forceNew: true
     });
-
-    this.setupEventListeners();
+    this.setupEventListeners(selectedInterests , chatMode);
     return this.socket;
   }
 
-  setupEventListeners() {
+  setupEventListeners(selectedInterests , chatMode) {
     if (!this.socket) return;
 
     this.socket.on('connect', () => {
@@ -35,6 +37,10 @@ class SocketService {
       this.isConnected = true;
       this.reconnectAttempts = 0;
       this.emit('connection-status', { connected: true, socketId: this.socket.id });
+      this.userJoined({ interests: selectedInterests, mode: chatMode, sessionId: Date.now().toString() });
+      this.joinQueue({ interests: selectedInterests, mode: chatMode, sessionId: Date.now().toString() });
+     // this.webrtcService = webrtcService.initialize(this.socket);
+
     });
 
     this.socket.on('disconnect', (reason) => {
