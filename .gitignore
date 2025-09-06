@@ -150,6 +150,3 @@ lib64@/
 
 
 # End of https://www.toptal.com/developers/gitignore/api/node
-
-extensions.json
-sip-config.json
