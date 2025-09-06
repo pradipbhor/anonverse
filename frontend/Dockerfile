@@ -1,27 +1,29 @@
-# Frontend Dockerfile
+# Stage 1: Build
 FROM node:18 AS builder
 
 WORKDIR /app
 
-# Copy package files
+# Copy and install dependencies
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci
 
-# Copy source code
+# Copy app code
 COPY . .
 
-# Build the app
+# Build the app using Vite
 RUN npm run build
 
-# Production stage
+# Stage 2: Serve with nginx
 FROM nginx:alpine
 
 # Copy custom nginx config
 COPY nginx-frontend.conf /etc/nginx/conf.d/default.conf
 
-# Copy built app
+# Copy built app from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
 
-EXPOSE 3000
+# Expose nginx's default port
+EXPOSE 80
 
+# Start nginx
 CMD ["nginx", "-g", "daemon off;"]

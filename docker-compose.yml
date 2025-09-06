@@ -17,8 +17,8 @@ services:
 
   backend:
     build:
-      context: ./backend   
-      dockerfile: Dockerfile   
+      context: ./backend
+      dockerfile: Dockerfile
     container_name: anonverse-backend
     ports:
       - "5000:5000"
@@ -28,6 +28,17 @@ services:
     environment:
       - MONGODB_URI=mongodb://mongodb:27017/anonverse
       - REDIS_URL=redis://redis:6379
+
+  frontend:
+    platform: linux/amd64 
+    build:
+      context: ./frontend        
+      dockerfile: Dockerfile    
+    container_name: anonverse-frontend
+    ports:
+      - "3000:80"             
+    depends_on:
+      - backend              
 
 volumes:
   mongo_data:
