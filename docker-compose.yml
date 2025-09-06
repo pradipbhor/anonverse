@@ -1,0 +1,33 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:6
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
+  redis:
+    image: redis:7
+    container_name: redis
+    ports:
+      - "6379:6379"
+
+  backend:
+    build:
+      context: ./backend   
+      dockerfile: Dockerfile   
+    container_name: anonverse-backend
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mongodb
+      - redis
+    environment:
+      - MONGODB_URI=mongodb://mongodb:27017/anonverse
+      - REDIS_URL=redis://redis:6379
+
+volumes:
+  mongo_data:
