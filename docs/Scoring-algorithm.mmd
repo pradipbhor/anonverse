@@ -1,0 +1,45 @@
+flowchart TD
+
+    A([User joins queue]) --> B{Queue empty?}
+
+    B -- Yes --> WAIT[Add to queue\nEmit queue-status to user]
+    B -- No --> C[Loop through all candidates in queue]
+
+    C --> D[Compute score for each candidate\nStart score at 0]
+    D --> E[Count common interests\nAdd count x 10 to score]
+    E --> F{Candidate waited\nmore than 30 seconds?}
+    F -- Yes --> G[Add 3 to score\nstarvation guard]
+    F -- No --> H[Keep score as is]
+    G --> I[Compare against best score so far]
+    H --> I
+    I --> J{More candidates\nto check?}
+    J -- Yes --> C
+    J -- No --> K{Best score\nabove zero?}
+
+    K -- No match --> WAIT
+    K -- Match found --> MATCH([createMatch\nEmit match-found to both users])
+
+    MATCH --> S1
+
+    subgraph STATE [Match State Machine]
+        S1([WAITING in queue]) -->|match found| S2([MATCHED\nemit match-found])
+        S2 -->|WebRTC connected| S3([CHATTING])
+        S3 -->|skip or disconnect-chat| S4([CLEANED UP])
+        S3 -->|network drop| S5([GRACE\n30 second window])
+        S5 -->|reconnect with sessionId| S3
+        S5 -->|timer expires| S6([PARTNER NOTIFIED])
+        S6 --> S4
+        S4 -->|user re-queues| S1
+    end
+
+    subgraph EXAMPLE [Score Calculation Example]
+        EX1[User A interests - Music Gaming Tech]
+        EX2[User B interests - Gaming Tech Sports]
+        EX3[User C interests - Fashion Cooking]
+        EX1 --> EX4[A vs B - common are Gaming and Tech\nscore = 2 x 10 = 20]
+        EX2 --> EX4
+        EX1 --> EX5[A vs C - no common interests\nscore = 0]
+        EX3 --> EX5
+        EX4 --> EX6[Winner is User B\nIf B waited over 30s then score = 23]
+        EX5 --> EX6
+    end

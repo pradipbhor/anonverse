@@ -1,0 +1,373 @@
+classDiagram
+
+    class RedisConfig {
+        +createClient(url) RedisClient
+        +connect() Promise
+        +disconnect() Promise
+    }
+
+    class MongoConfig {
+        +connect(uri) Promise
+        +disconnect() Promise
+    }
+
+    class SocketConfig {
+        +create(server) SocketIOServer
+        +getCorsOptions() CorsOptions
+    }
+
+    class Message {
+        +roomId String
+        +senderId String
+        +recipientId String
+        +content String
+        +type String
+        +status String
+        +expiresAt Date
+        +createdAt Date
+        +markAsRead() Promise
+        +markAsDelivered() Promise
+        +getRoomMessages(roomId, limit, skip) Promise
+        +scheduleRoomDeletion(roomId, hours) Promise
+        +deleteRoomMessages(roomId) Promise
+        +getUnreadCount(recipientId, roomId) Promise
+    }
+
+    class QueueUser {
+        +socketId String
+        +sessionId String
+        +interests Array
+        +mode String
+        +joinedQueueAt Date
+        +missedPings Number
+    }
+
+    class ConnectedUser {
+        +socketId String
+        +sessionId String
+        +isMatched Boolean
+        +currentMatch String
+        +roomId String
+        +inQueue Boolean
+        +interests Array
+        +mode String
+        +lastPing Date
+        +matchState String
+    }
+
+    class ActiveMatch {
+        +roomId String
+        +user1SocketId String
+        +user2SocketId String
+        +createdAt Date
+        +mode String
+        +commonInterests Array
+        +state String
+        +graceStartedAt Date
+    }
+
+    class MatchScore {
+        +candidate QueueUser
+        +score Number
+        +commonInterests Array
+    }
+
+    class PresenceService {
+        -connectedUsers Map
+        -sessionToSocket Map
+        +addUser(socketId, sessionId, data) void
+        +removeUser(socketId) void
+        +getUser(socketId) ConnectedUser
+        +getUserBySession(sessionId) ConnectedUser
+        +updateUser(socketId, data) void
+        +remapSocket(oldId, newId, sessionId) void
+        +getAllUsers() Array
+        +getOnlineCount() Number
+    }
+
+    class MatchmakingService {
+        -textQueue Array
+        -videoQueue Array
+        -activeMatches Map
+        -presenceService PresenceService
+        -GRACE_PERIOD_MS Number
+        +joinQueue(user) MatchResult
+        +leaveQueue(socketId) void
+        +findBestMatch(user, queue) QueueUser
+        +calculateScore(u1, u2) MatchScore
+        +createMatch(u1, u2) ActiveMatch
+        +handleGracePeriod(roomId, disconnectedId) void
+        +restoreMatch(sessionId, newSocketId) ActiveMatch
+        +cleanupMatch(roomId) void
+        +removeFromQueues(socketId) void
+        +cleanStaleEntries(liveSocketIds) void
+        +getQueueStats() Object
+    }
+
+    class ChatService {
+        -redisClient RedisClient
+        -CACHE_TTL Number
+        +sendMessage(data) Promise
+        +getRoomMessages(roomId, options) Promise
+        +markMessageDelivered(msgId, recipientId) Promise
+        +markMessageRead(msgId, recipientId) Promise
+        +markRoomMessagesAsRead(roomId, recipientId) Promise
+        +setTypingIndicator(roomId, userId, isTyping) Promise
+        +getTypingUsers(roomId) Promise
+        +scheduleRoomDeletion(roomId, hours) Promise
+        +deleteRoomMessages(roomId) Promise
+        +getUnreadCount(recipientId, roomId) Promise
+        +getStats() Promise
+        -cacheMessage(roomId, msg) Promise
+        -getCachedRoomMessages(roomId) Promise
+        -clearRoomCache(roomId) Promise
+        -formatMessage(msg) Object
+    }
+
+    class ReconnectionService {
+        -presenceService PresenceService
+        -matchmakingService MatchmakingService
+        -pendingReconnections Map
+        -RECONNECT_WINDOW_MS Number
+        +handleDisconnect(socketId, reason) void
+        +handleReconnect(newSocketId, sessionId) Object
+        +startGraceTimer(sessionId, roomId) void
+        +cancelGraceTimer(sessionId) void
+        +isInGrace(sessionId) Boolean
+    }
+
+    class HeartbeatService {
+        -io SocketIOServer
+        -presenceService PresenceService
+        -PING_INTERVAL_MS Number
+        -PONG_TIMEOUT_MS Number
+        -MAX_MISSED_PINGS Number
+        +start() void
+        +stop() void
+        +handlePong(socketId) void
+        -pingAll() void
+        -markMissedPing(socketId) void
+        -evictStale() void
+    }
+
+    class ConnectionHandler {
+        -presenceService PresenceService
+        -reconnectionService ReconnectionService
+        -heartbeatService HeartbeatService
+        +handleConnection(socket) void
+        +handleDisconnect(socket, reason) void
+        +handleUserJoin(socket, data) void
+        +handleReconnect(socket, data) void
+    }
+
+    class MatchmakingHandler {
+        -matchmakingService MatchmakingService
+        -presenceService PresenceService
+        +handleJoinQueue(socket, data) void
+        +handleLeaveQueue(socket) void
+        +handleSkipUser(socket) void
+        -emitMatchFound(socket, match, isInitiator) void
+        -emitQueueStatus(socket, position) void
+    }
+
+    class SignalingHandler {
+        -presenceService PresenceService
+        +handleOffer(socket, data) void
+        +handleAnswer(socket, data) void
+        +handleIceCandidate(socket, data) void
+    }
+
+    class ChatHandler {
+        -chatService ChatService
+        -presenceService PresenceService
+        +handleSendMessage(socket, data) Promise
+        +handleGetMessages(socket, data) Promise
+        +handleTyping(socket) void
+        +handleStopTyping(socket) void
+        +handleMarkRead(socket, data) Promise
+        +handleReport(socket, data) void
+        +handleDisconnectChat(socket) Promise
+    }
+
+    class RateLimiterMiddleware {
+        +generalLimiter() Middleware
+        +chatLimiter() Middleware
+        +userLimiter() Middleware
+        +moderationLimiter() Middleware
+    }
+
+    class ErrorMiddleware {
+        +errorHandler(err, req, res, next) void
+        +notFoundHandler(req, res) void
+    }
+
+    class Server {
+        -app ExpressApp
+        -server HttpServer
+        -io SocketIOServer
+        +initializeMiddleware() void
+        +initializeRoutes() void
+        +initializeSocketHandlers() void
+        +initializeServices() Promise
+    }
+
+    class Index {
+        +startServer() Promise
+    }
+
+    class SocketService {
+        -socket Socket
+        -sessionId String
+        -isConnected Boolean
+        -reconnectAttempts Number
+        -pendingActions Array
+        -listeners Map
+        +connect(interests, mode) Socket
+        +disconnect() void
+        +sendMessage(data) void
+        +joinQueue(data) void
+        +leaveQueue() void
+        +skipUser() void
+        +sendWebRTCOffer(data) void
+        +sendWebRTCAnswer(data) void
+        +sendWebRTCIceCandidate(data) void
+        +sendTyping() void
+        +stopTyping() void
+        +on(event, cb) void
+        +off(event, cb) void
+        +forceReconnect() void
+        -setupEventListeners() void
+        -processPendingActions() void
+        -handleReconnectEvent() void
+    }
+
+    class WebRTCService {
+        -localStream MediaStream
+        -remoteStream MediaStream
+        -peerConnection RTCPeerConnection
+        -socketService SocketService
+        -partnerId String
+        -isInitiator Boolean
+        -connectionState String
+        -iceRestartAttempts Number
+        +onLocalStream Function
+        +onRemoteStream Function
+        +onConnectionStateChange Function
+        +onError Function
+        +initialize(socketService) void
+        +getUserMedia(constraints) Promise
+        +startCall(partnerId) Promise
+        +endCall() void
+        +cleanup() void
+        +toggleVideo() Boolean
+        +toggleAudio() Boolean
+        +attemptIceRestart() Promise
+        +getConnectionStats() Promise
+        -createPeerConnection() RTCPeerConnection
+        -setupPeerConnectionListeners() void
+        -handleOffer(data) Promise
+        -handleAnswer(data) Promise
+        -handleIceCandidate(data) Promise
+        -handleConnectionFailure() void
+    }
+
+    class App {
+        -theme String
+        -currentPage String
+        -chatMode String
+        -selectedInterests Array
+        -partner Object
+        -messages Array
+        -connectionStatus String
+        +renderHomePage() JSX
+        +renderMatchingPage() JSX
+        +renderChatPage() JSX
+        +handleStartChat() Promise
+        +handleSendMessage() void
+        +handleSkipUser() void
+        +handleEndChat() void
+    }
+
+    class VideoStream {
+        -stream MediaStream
+        -muted Boolean
+        -mirrored Boolean
+        -isLoaded Boolean
+        -hasError Boolean
+        -retryCount Number
+        +updateVideoStream() Promise
+        +handleManualPlay() Promise
+        +renderPlaceholder() JSX
+    }
+
+    class ChatMode {
+        <<enumeration>>
+        TEXT
+        VIDEO
+    }
+
+    class MatchState {
+        <<enumeration>>
+        WAITING
+        MATCHED
+        CHATTING
+        GRACE
+        CLEANED_UP
+    }
+
+    class MessageStatus {
+        <<enumeration>>
+        SENT
+        DELIVERED
+        READ
+    }
+
+    Index --> Server : starts
+    Server --> RedisConfig : uses
+    Server --> MongoConfig : uses
+    Server --> SocketConfig : uses
+    Server --> ConnectionHandler : registers
+    Server --> MatchmakingHandler : registers
+    Server --> SignalingHandler : registers
+    Server --> ChatHandler : registers
+    Server --> RateLimiterMiddleware : applies
+    Server --> ErrorMiddleware : applies
+
+    ConnectionHandler --> PresenceService : uses
+    ConnectionHandler --> ReconnectionService : uses
+    ConnectionHandler --> HeartbeatService : uses
+
+    MatchmakingHandler --> MatchmakingService : uses
+    MatchmakingHandler --> PresenceService : uses
+
+    SignalingHandler --> PresenceService : uses
+
+    ChatHandler --> ChatService : uses
+    ChatHandler --> PresenceService : uses
+
+    MatchmakingService --> PresenceService : depends on
+    MatchmakingService --> ActiveMatch : creates
+    MatchmakingService --> QueueUser : queues
+    MatchmakingService --> MatchScore : computes
+
+    ReconnectionService --> PresenceService : uses
+    ReconnectionService --> MatchmakingService : uses
+
+    HeartbeatService --> PresenceService : uses
+
+    ChatService --> Message : persists
+
+    PresenceService --> ConnectedUser : manages
+
+    App --> SocketService : uses
+    App --> WebRTCService : uses
+    App --> VideoStream : renders
+
+    WebRTCService --> SocketService : signals via
+
+    QueueUser --> ChatMode : has
+    ConnectedUser --> ChatMode : has
+    ConnectedUser --> MatchState : has
+    ActiveMatch --> MatchState : has
+    ActiveMatch --> ChatMode : has
+    Message --> MessageStatus : has

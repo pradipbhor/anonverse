@@ -1,0 +1,99 @@
+sequenceDiagram
+    participant C1 as Client 1
+    participant C2 as Client 2
+    participant SIO as Socket.IO Layer
+    participant CH as ConnectionHandler
+    participant MH as MatchmakingHandler
+    participant MS as MatchmakingService
+    participant PS as PresenceService
+    participant HB as HeartbeatService
+    participant RS as ReconnectionService
+
+    Note over C1,RS: ── PHASE 1: CONNECTION & JOIN ──
+
+    C1->>SIO: connect()
+    SIO->>CH: handleConnection(socket)
+    CH->>PS: addUser(socketId, sessionId)
+    CH-->>C1: emit("connected", {sessionId})
+
+    C1->>SIO: emit("user-join", {interests, mode, sessionId})
+    SIO->>CH: handleUserJoin(socket, data)
+    CH->>PS: updateUser(socketId, {interests, mode})
+
+    C1->>SIO: emit("join-queue", {interests, mode})
+    SIO->>MH: handleJoinQueue(socket, data)
+    MH->>PS: getUser(socketId)
+    MH->>MS: joinQueue(queueUser)
+
+    Note over MS: Check queue for candidates
+
+    alt No match found
+        MS-->>MH: null
+        MH-->>C1: emit("queue-status", {position, estimatedWait})
+    end
+
+    Note over C2,RS: ── PHASE 2: SECOND USER JOINS ──
+
+    C2->>SIO: connect() + join-queue
+    SIO->>MH: handleJoinQueue(socket, data)
+    MH->>MS: joinQueue(queueUser2)
+
+    Note over MS: calculateScore(user1, user2)<br/>score = commonInterests×10 + modeBonus + waitBonus
+
+    MS->>MS: findBestMatch(user2, queue)
+    MS->>MS: createMatch(user1, user2)
+    MS->>PS: updateUser(u1 → isMatched, roomId)
+    MS->>PS: updateUser(u2 → isMatched, roomId)
+    MS-->>MH: ActiveMatch {roomId, commonInterests}
+
+    MH-->>C1: emit("match-found", {partnerId, sendOffer:true, roomId, commonInterests})
+    MH-->>C2: emit("match-found", {partnerId, sendOffer:false, roomId, commonInterests})
+
+    Note over C1,C2: ── PHASE 3: WEBRTC SIGNALING ──
+
+    C1->>SIO: emit("webrtc-offer", {offer, to})
+    SIO->>SignalingHandler: handleOffer(socket, data)
+    SignalingHandler->>PS: getUser(socketId) → get roomId
+    SignalingHandler-->>C2: emit("webrtc-offer", {offer, from})
+
+    C2->>SIO: emit("webrtc-answer", {answer, to})
+    SIO->>SignalingHandler: handleAnswer(socket, data)
+    SignalingHandler-->>C1: emit("webrtc-answer", {answer, from})
+
+    C1->>SIO: emit("webrtc-ice-candidate", {candidate})
+    SignalingHandler-->>C2: emit("webrtc-ice-candidate", {candidate, from})
+
+    Note over C1,C2: P2P media flows directly — server not in media path
+
+    Note over C1,RS: ── PHASE 4: HEARTBEAT ──
+
+    loop every 15 seconds
+        HB->>C1: emit("ping")
+        C1->>HB: emit("pong")
+        HB->>PS: updateUser(socketId, {lastPing: now, missedPings: 0})
+    end
+
+    Note over C1,RS: ── PHASE 5: RECONNECTION (network drop) ──
+
+    C1--xSIO: connection lost (network drop)
+    SIO->>CH: handleDisconnect(socket, "transport close")
+    CH->>RS: handleDisconnect(socketId, reason)
+    RS->>MS: handleGracePeriod(roomId, socketId)
+
+    Note over RS: Start 30s grace timer<br/>matchState = GRACE<br/>Do NOT notify partner yet
+
+    alt Client reconnects within 30s
+        C1->>SIO: connect() [new socketId]
+        C1->>SIO: emit("reconnect", {sessionId})
+        SIO->>CH: handleReconnect(socket, {sessionId})
+        CH->>RS: handleReconnect(newSocketId, sessionId)
+        RS->>PS: remapSocket(oldId, newSocketId, sessionId)
+        RS->>MS: restoreMatch(sessionId, newSocketId)
+        RS->>RS: cancelGraceTimer(sessionId)
+        CH-->>C1: emit("reconnect-success", {roomId, partnerId, matchRestored: true})
+        Note over C1,C2: Chat resumes, WebRTC renegotiates
+    else Grace period expires (30s)
+        RS->>MS: cleanupMatch(roomId)
+        RS-->>C2: emit("partner-disconnected")
+        RS->>ChatService: scheduleRoomDeletion(roomId, 12h)
+    end
